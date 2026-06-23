@@ -1,0 +1,21 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/nav/code.xml
+/.idea/
+.DS_Store
+/build
+/app/build
+captures/
+.externalNativeBuild
+.cxx
+local.properties
+/app/src/main/assets/model-ko/
+
+# Node.js server
+server/node_modules/
+server/.env

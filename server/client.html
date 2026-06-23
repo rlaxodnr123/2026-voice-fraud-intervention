@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>CallGuard 테스트 클라이언트</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #0f0e17; color: #e2e1e6; padding: 24px; max-width: 480px; margin: auto; }
+  h2  { color: #00f2fe; }
+  input, button { width: 100%; padding: 10px; margin: 6px 0; border-radius: 8px; border: none; box-sizing: border-box; font-size: 14px; }
+  input  { background: #1e1b29; color: #e2e1e6; border: 1px solid #4facfe; }
+  button { background: #4facfe; color: #000; font-weight: bold; cursor: pointer; }
+  button:disabled { background: #555; color: #999; cursor: not-allowed; }
+  #log   { background: #1e1b29; padding: 12px; border-radius: 8px; height: 260px; overflow-y: auto; font-size: 12px; margin-top: 12px; }
+  .ok    { color: #34c759; }
+  .err   { color: #ff3b30; }
+  .info  { color: #00f2fe; }
+  .warn  { color: #ffcc00; }
+  #status { padding: 8px 14px; border-radius: 20px; display:inline-block; margin: 8px 0; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h2>📞 CallGuard 테스트 클라이언트</h2>
+
+<label>서버 IP</label>
+<input id="ip" value="localhost" placeholder="예: 192.168.0.10" />
+
+<label>방 코드</label>
+<input id="room" value="room-1" placeholder="예: room-1" />
+
+<div id="status" style="background:#333">대기 중</div>
+
+<button id="btnJoin"   onclick="joinRoom()">방 입장 (통화 시작)</button>
+<button id="btnHangup" onclick="hangUp()" disabled>통화 종료</button>
+
+<div id="log"></div>
+
+<audio id="remoteAudio" autoplay></audio>
+
+<script>
+let ws, pc;
+let role = null;
+
+const $ = id => document.getElementById(id);
+
+function log(msg, cls='info') {
+  const d = $('log');
+  const t = new Date().toLocaleTimeString();
+  d.innerHTML += `<div class="${cls}">[${t}] ${msg}</div>`;
+  d.scrollTop = d.scrollHeight;
+}
+
+function setStatus(text, color) {
+  const s = $('status');
+  s.textContent = text;
+  s.style.background = color;
+}
+
+// ── 방 입장 ──────────────────────────────────────────────────────
+async function joinRoom() {
+  const ip   = $('ip').value.trim();
+  const room = $('room').value.trim();
+  if (!ip || !room) { log('IP와 방 코드를 입력하세요.', 'err'); return; }
+
+  $('btnJoin').disabled = true;
+  log(`서버 ws://${ip}:8080 연결 중...`);
+
+  ws = new WebSocket(`ws://${ip}:8080`);
+
+  ws.onopen = () => {
+    log('WebSocket 연결 성공', 'ok');
+    ws.send(JSON.stringify({ type: 'join', room }));
+  };
+
+  ws.onmessage = async (e) => {
+    const msg = JSON.parse(e.data);
+    log(`수신: ${msg.type}` + (msg.role ? ` (role=${msg.role})` : ''));
+
+    switch (msg.type) {
+      case 'joined':
+        role = msg.role;
+        setStatus(`방 입장 완료 (${role})`, role === 'caller' ? '#005f99' : '#4a0070');
+        log(`역할: ${role}`, 'ok');
+        if (role === 'caller') {
+          log('상대방 입장 대기 중...', 'warn');
+        }
+        break;
+
+      case 'start_call':
+        log('통화 시작 지시 수신 → Offer 생성', 'warn');
+        await setupPeerConnection();
+        await createAndSendOffer();
+        break;
+
+      case 'offer':
+        log('Offer 수신 → Answer 생성');
+        await setupPeerConnection();
+        await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+        log('Answer 전송 완료', 'ok');
+        break;
+
+      case 'answer':
+        log('Answer 수신 → Remote 설정');
+        await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+        break;
+
+      case 'ice_candidate':
+        if (pc && msg.sdp) {
+          await pc.addIceCandidate({ sdpMid: msg.sdpMid, sdpMLineIndex: msg.sdpMLineIndex, candidate: msg.sdp });
+        }
+        break;
+
+      case 'call_end':
+        log('상대방이 통화를 종료했습니다.', 'err');
+        hangUp();
+        break;
+    }
+  };
+
+  ws.onerror = (e) => { log('WebSocket 오류: ' + e.type, 'err'); };
+  ws.onclose = ()  => { log('WebSocket 연결 종료'); };
+}
+
+// ── PeerConnection 설정 ──────────────────────────────────────────
+async function setupPeerConnection() {
+  if (pc) return;
+
+  // 마이크 스트림 요청
+  let localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    log('마이크 권한 획득', 'ok');
+  } catch(e) {
+    log('마이크 권한 없음 (오디오 없이 진행): ' + e.message, 'warn');
+  }
+
+  pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  });
+
+  // 로컬 마이크 트랙 추가
+  if (localStream) {
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  }
+
+  // 원격 오디오 수신
+  pc.ontrack = (e) => {
+    log('원격 오디오 수신', 'ok');
+    const audio = $('remoteAudio');
+    if (audio.srcObject !== e.streams[0]) {
+      audio.srcObject = e.streams[0];
+    }
+  };
+
+  // ICE 후보 전송
+  pc.onicecandidate = (e) => {
+    if (e.candidate && ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'ice_candidate',
+        sdpMid: e.candidate.sdpMid,
+        sdpMLineIndex: e.candidate.sdpMLineIndex,
+        sdp: e.candidate.candidate
+      }));
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    log('연결 상태: ' + s, s === 'connected' ? 'ok' : s === 'failed' ? 'err' : 'info');
+    if (s === 'connected') {
+      setStatus('🟢 통화 중', '#1a4a1a');
+      $('btnHangup').disabled = false;
+    } else if (s === 'failed' || s === 'disconnected') {
+      setStatus('🔴 연결 끊김', '#4a0000');
+    }
+  };
+}
+
+// ── Offer 생성 (caller 역할) ──────────────────────────────────────
+async function createAndSendOffer() {
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+  log('Offer 전송 완료', 'ok');
+  setStatus('⏳ 연결 중...', '#4a3000');
+}
+
+// ── 통화 종료 ─────────────────────────────────────────────────────
+function hangUp() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'call_end' }));
+    ws.close();
+  }
+  if (pc) { pc.close(); pc = null; }
+  role = null;
+  $('btnJoin').disabled = false;
+  $('btnHangup').disabled = true;
+  setStatus('통화 종료', '#333');
+  log('통화 종료', 'warn');
+}
+</script>
+</body>
+</html>
