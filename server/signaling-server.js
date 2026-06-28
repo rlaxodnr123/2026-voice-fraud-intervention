@@ -1,7 +1,6 @@
 /**
- * CallGuard WebRTC Signaling Server
+ * CallGuard WebRTC Signaling Server (온프레미스용)
  *
- * 역할: 두 Android 기기 사이에서 WebRTC SDP/ICE 메시지를 중계한다.
  * 실행: node signaling-server.js
  * 포트: 8080 (환경변수 PORT로 변경 가능)
  *
@@ -18,9 +17,20 @@ const wss = new WebSocket.Server({ port: PORT });
 // roomId -> { caller: ws, callee: ws }
 const rooms = new Map();
 
+function send(ws, obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(obj));
+    }
+}
+
 wss.on('connection', (ws) => {
     let currentRoom = null;
     let myRole = null;
+
+    // 30초마다 ping으로 연결 유지
+    const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+    }, 30000);
 
     ws.on('message', (rawData) => {
         let msg;
@@ -32,7 +42,6 @@ wss.on('connection', (ws) => {
 
         switch (msg.type) {
 
-            // ── 방 입장 ──────────────────────────────────────────
             case 'join': {
                 const roomId = msg.room;
                 if (!roomId) return;
@@ -54,7 +63,6 @@ wss.on('connection', (ws) => {
                     currentRoom = roomId;
                     send(ws, { type: 'joined', role: 'callee' });
                     console.log(`[${roomId}] callee 입장 → 통화 준비 완료`);
-                    // 두 사람 모두 입장했으니 caller에게 offer 생성 지시
                     send(room.caller, { type: 'start_call' });
                 } else {
                     send(ws, { type: 'error', message: '방이 꽉 찼습니다.' });
@@ -63,7 +71,6 @@ wss.on('connection', (ws) => {
                 break;
             }
 
-            // ── SDP / ICE 중계 (상대방에게 그대로 전달) ──────────
             case 'offer':
             case 'answer':
             case 'ice_candidate':
@@ -84,17 +91,16 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
+        clearInterval(pingInterval);
         if (!currentRoom) return;
         const room = rooms.get(currentRoom);
         if (!room) return;
 
-        // 상대방에게 통화 종료 알림
         const peer = myRole === 'caller' ? room.callee : room.caller;
         if (peer && peer.readyState === WebSocket.OPEN) {
             send(peer, { type: 'call_end' });
         }
 
-        // 방 정리
         if (myRole === 'caller') room.caller = null;
         else room.callee = null;
 
@@ -107,11 +113,5 @@ wss.on('connection', (ws) => {
 
     ws.on('error', (err) => console.error('WS error:', err.message));
 });
-
-function send(ws, obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(obj));
-    }
-}
 
 console.log(`CallGuard 시그널링 서버 실행 중 → ws://localhost:${PORT}`);

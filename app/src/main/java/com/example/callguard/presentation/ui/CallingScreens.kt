@@ -4,6 +4,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,6 +33,7 @@ import com.example.callguard.domain.interfaces.RiskLevel
 import com.example.callguard.domain.interfaces.RiskScore
 import com.example.callguard.domain.service.CallService
 import com.example.callguard.presentation.viewmodel.CallViewModel
+import com.example.callguard.presentation.viewmodel.LeakSurveyAnswers
 import kotlinx.coroutines.launch
 
 // ── 색상 팔레트 ──────────────────────────────────────────────────
@@ -50,6 +52,7 @@ fun CallGuardApp(viewModel: CallViewModel) {
     val callState by viewModel.callState.collectAsState()
     val showRemoteWarning by viewModel.showRemotePhishingWarning.collectAsState()
     val localLeakEvent by viewModel.localLeakEvent.collectAsState()
+    val surveyAnswers by viewModel.surveyAnswers.collectAsState()
     val isSttReady by viewModel.isSttReady.collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize(), color = ThemeBackground) {
@@ -90,9 +93,13 @@ fun CallGuardApp(viewModel: CallViewModel) {
             }
 
             // ── 팝업 레이어 ──────────────────────────────────────
-            // 우선순위: 로컬 누출 경고 > 원격 피싱 경고
+            // 우선순위: 로컬 누출 경고(설문) > 원격 피싱 경고
             localLeakEvent?.let { event ->
-                LocalLeakBlockedOverlay(event = event, viewModel = viewModel)
+                LocalLeakSurveyOverlay(
+                    event = event,
+                    surveyAnswers = surveyAnswers,
+                    viewModel = viewModel
+                )
             } ?: run {
                 if (showRemoteWarning) {
                     RemotePhishingWarningOverlay(viewModel = viewModel)
@@ -108,19 +115,29 @@ fun CallGuardApp(viewModel: CallViewModel) {
 @Composable
 fun DialScreen(viewModel: CallViewModel) {
     val context = LocalContext.current
-    var serverIp by remember { mutableStateOf("192.168.0.") }
-    var roomId   by remember { mutableStateOf("") }
+    var serverUrl by remember { mutableStateOf("ws://192.168.") }
+    var roomId    by remember { mutableStateOf("") }
     var simPhrase by remember { mutableStateOf("") }
 
     val presetRemote = listOf(
-        "안녕하세요, 저는 검찰청 수사관입니다.",
-        "명의 도용 사건으로 수사 중입니다. 안전 계좌로 송금하세요.",
-        "주민등록번호와 비밀번호를 알려주시면 확인해 드리겠습니다."
+        // 검찰 사칭
+        "안녕하세요 저는 서울중앙지검 수사관입니다",
+        "고객님 명의 대포통장 범죄 수사 중입니다 구속될 수 있습니다",
+        "안전계좌로 즉시 송금하지 않으면 체포영장 발부됩니다",
+        // 금융감독원 사칭
+        "금융감독원입니다 명의도용으로 계좌 압류 예정입니다",
+        "보안 앱 설치 후 원격 제어 허용해 주세요",
+        // 가족 납치 사칭
+        "엄마 나 납치됐어 합의금 빨리 보내줘",
+        // 택배 사칭
+        "택배 미수령 건 통관 문제로 연락드렸습니다"
     )
     val presetLocal = listOf(
-        "제 비밀번호는 1234입니다.",
-        "인증번호는 678910 입니다.",
-        "카드 비밀번호는 0000이에요."
+        "제 비밀번호는 1234입니다",
+        "인증번호는 678910 입니다",
+        "카드 비밀번호는 0000이에요",
+        "주민등록번호는 901231 입니다",
+        "지금 바로 이체할게요"
     )
 
     LazyColumn(
@@ -157,10 +174,10 @@ fun DialScreen(viewModel: CallViewModel) {
                     Text("인터넷 통화 (P2P)", color = PrimaryCyan, fontWeight = FontWeight.Bold, fontSize = 15.sp)
 
                     OutlinedTextField(
-                        value = serverIp,
-                        onValueChange = { serverIp = it },
-                        label = { Text("시그널링 서버 IP", color = TextDark) },
-                        placeholder = { Text("예: 192.168.0.10", color = TextDark) },
+                        value = serverUrl,
+                        onValueChange = { serverUrl = it },
+                        label = { Text("서버 주소", color = TextDark) },
+                        placeholder = { Text("예: ws://192.168.0.10", color = TextDark) },
                         shape = RoundedCornerShape(12.dp),
                         colors = TextFieldDefaults.outlinedTextFieldColors(
                             focusedBorderColor = PrimaryCyan,
@@ -168,7 +185,14 @@ fun DialScreen(viewModel: CallViewModel) {
                             containerColor = ThemeBackground
                         ),
                         textStyle = LocalTextStyle.current.copy(color = TextLight),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        supportingText = {
+                            Text(
+                                "PC의 로컬 IP 주소 입력 (ipconfig로 확인)",
+                                color = TextDark,
+                                fontSize = 10.sp
+                            )
+                        }
                     )
                     OutlinedTextField(
                         value = roomId,
@@ -187,8 +211,8 @@ fun DialScreen(viewModel: CallViewModel) {
 
                     Button(
                         onClick = {
-                            if (serverIp.isNotBlank() && roomId.isNotBlank()) {
-                                viewModel.joinRoom(context, serverIp, roomId)
+                            if (serverUrl.isNotBlank() && roomId.isNotBlank()) {
+                                viewModel.joinRoom(context, serverUrl, roomId)
                             }
                         },
                         shape = RoundedCornerShape(14.dp),
@@ -636,11 +660,12 @@ fun RemotePhishingWarningOverlay(viewModel: CallViewModel) {
     }
 }
 
-// ── 경고 팝업 2: 로컬 누출 차단 (내가 개인정보를 말하려는 순간) ────
+// ── 경고 팝업 2: 로컬 누출 차단 + 상황 확인 설문 ───────────────────
 
 @Composable
-fun LocalLeakBlockedOverlay(
+fun LocalLeakSurveyOverlay(
     event: InterventionEvent.LocalLeakBlocked,
+    surveyAnswers: LeakSurveyAnswers,
     viewModel: CallViewModel
 ) {
     Dialog(onDismissRequest = {}) {
@@ -649,49 +674,255 @@ fun LocalLeakBlockedOverlay(
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1A0005)),
             modifier = Modifier.fillMaxWidth().border(2.dp, AccentRed, RoundedCornerShape(24.dp))
         ) {
-            Column(
-                modifier = Modifier.padding(28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+            LazyColumn(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Text("🚨 마이크 즉시 차단됨!", color = AccentRed, fontSize = 22.sp,
-                    fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center)
-
-                // 감지된 민감 정보 패턴 태그
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(AccentRed.copy(0.15f))
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    Text("감지 패턴: \"${event.triggerPhrase}\"",
-                        color = AccentRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                // ── 헤더 ──
+                item {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "마이크가 차단되었습니다",
+                            color = AccentRed, fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(AccentRed.copy(0.15f))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                "감지: \"${event.triggerPhrase}\"",
+                                color = AccentRed, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "개인정보 유출 위험이 감지되었습니다.\n아래 질문에 답해 주세요.",
+                            color = TextLight, fontSize = 14.sp,
+                            textAlign = TextAlign.Center, lineHeight = 20.sp
+                        )
+                    }
                 }
 
-                Text(
-                    "개인 금융 정보를 말하려는 순간을 감지하여\n마이크를 즉시 차단했습니다.\n\n" +
-                    "전화로 비밀번호·인증번호·카드번호를\n절대로 알려주지 마세요.\n" +
-                    "이는 100% 보이스피싱입니다.",
-                    color = TextLight, fontSize = 14.sp, textAlign = TextAlign.Center, lineHeight = 22.sp
-                )
+                // ── 설문 문항 ──
+                item {
+                    Divider(color = AccentRed.copy(0.3f))
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "상황 확인 설문",
+                        color = WarningAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                    )
+                }
 
-                Button(
-                    onClick = { viewModel.endCall() },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentRed),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().height(50.dp)
-                ) { Text("전화 끊기 (권장)", color = Color.White, fontWeight = FontWeight.Bold) }
-                OutlinedButton(
-                    onClick = { viewModel.dismissLocalLeakWarning() },
-                    border = BorderStroke(1.dp, TextDark),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextLight),
-                    modifier = Modifier.fillMaxWidth().height(46.dp)
-                ) { Text("마이크 복구 후 통화 계속", fontSize = 12.sp) }
+                item {
+                    SurveyQuestion(
+                        number = "1",
+                        question = "모르는 사람에게\n전화가 왔나요?",
+                        answer = surveyAnswers.q1UnknownPerson,
+                        onYes = { viewModel.answerSurvey(q1 = true) },
+                        onNo  = { viewModel.answerSurvey(q1 = false) }
+                    )
+                }
+                item {
+                    SurveyQuestion(
+                        number = "2",
+                        question = "저장되지 않은\n모르는 번호인가요?",
+                        answer = surveyAnswers.q2UnknownNumber,
+                        onYes = { viewModel.answerSurvey(q2 = true) },
+                        onNo  = { viewModel.answerSurvey(q2 = false) }
+                    )
+                }
+                item {
+                    SurveyQuestion(
+                        number = "3",
+                        question = "보이스피싱이\n의심되시나요?",
+                        answer = surveyAnswers.q3SuspectScam,
+                        onYes = { viewModel.answerSurvey(q3 = true) },
+                        onNo  = { viewModel.answerSurvey(q3 = false) }
+                    )
+                }
+                item {
+                    SurveyQuestion(
+                        number = "4",
+                        question = "가족·지인과의\n실제 긴급 상황인가요?",
+                        answer = surveyAnswers.q4VerifiedReal,
+                        onYes = { viewModel.answerSurvey(q4 = true) },
+                        onNo  = { viewModel.answerSurvey(q4 = false) }
+                    )
+                }
+
+                // ── 결과 & 액션 버튼 ──
+                item {
+                    if (surveyAnswers.allAnswered) {
+                        SurveyResultSection(surveyAnswers, viewModel)
+                    } else {
+                        // 설문 미완료 시 전화 끊기만 노출
+                        Button(
+                            onClick = { viewModel.endCall() },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentRed),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(50.dp)
+                        ) {
+                            Text("전화 끊기 (권장)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+@Composable
+private fun SurveyQuestion(
+    number: String,
+    question: String,
+    answer: Boolean?,
+    onYes: () -> Unit,
+    onNo: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 번호 뱃지
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(
+                    when (answer) {
+                        true  -> AccentRed.copy(0.8f)
+                        false -> SafeGreen.copy(0.8f)
+                        null  -> TextDark.copy(0.3f)
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(number, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            question,
+            color = TextLight, fontSize = 13.sp, lineHeight = 18.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(8.dp))
+        // 예/아니오 버튼
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SurveyChoiceButton(
+                label = "예",
+                selected = answer == true,
+                selectedColor = AccentRed,
+                onClick = onYes
+            )
+            SurveyChoiceButton(
+                label = "아니오",
+                selected = answer == false,
+                selectedColor = SafeGreen,
+                onClick = onNo
+            )
+        }
+    }
+}
+
+@Composable
+private fun SurveyChoiceButton(
+    label: String,
+    selected: Boolean,
+    selectedColor: Color,
+    onClick: () -> Unit
+) {
+    val bg = if (selected) selectedColor else ThemeCardBg
+    val border = if (selected) selectedColor else TextDark.copy(0.4f)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .border(1.dp, border, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = if (selected) Color.White else TextDark, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun SurveyResultSection(answers: LeakSurveyAnswers, viewModel: CallViewModel) {
+    val isHighRisk = answers.shouldKeepBlocked
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // 결과 배너
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (isHighRisk) AccentRed.copy(0.15f) else SafeGreen.copy(0.12f))
+                .border(1.dp, if (isHighRisk) AccentRed else SafeGreen, RoundedCornerShape(12.dp))
+                .padding(14.dp)
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    if (isHighRisk) "보이스피싱 위험 높음" else "실제 상황으로 확인됨",
+                    color = if (isHighRisk) AccentRed else SafeGreen,
+                    fontWeight = FontWeight.ExtraBold, fontSize = 16.sp
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (isHighRisk)
+                        "마이크 차단을 유지합니다.\n절대 개인정보를 알려주지 마세요."
+                    else
+                        "마이크 차단을 해제합니다.\n하지만 여전히 주의가 필요합니다.",
+                    color = TextLight, fontSize = 12.sp,
+                    textAlign = TextAlign.Center, lineHeight = 18.sp
+                )
+            }
+        }
+
+        // 전화 끊기 (항상 노출)
+        Button(
+            onClick = { viewModel.endCall() },
+            colors = ButtonDefaults.buttonColors(containerColor = AccentRed),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(50.dp)
+        ) {
+            Text(
+                if (isHighRisk) "전화 끊기 (강력 권장)" else "전화 끊기",
+                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp
+            )
+        }
+
+        // 보이스피싱 위험 시: 차단 유지 후 닫기 | 실제 상황 시: 마이크 해제
+        if (isHighRisk) {
+            OutlinedButton(
+                onClick = { viewModel.submitSurveyAndDecide() },
+                border = BorderStroke(1.dp, TextDark),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextDark),
+                modifier = Modifier.fillMaxWidth().height(44.dp)
+            ) {
+                Text("마이크 차단 유지하고 통화 계속", fontSize = 12.sp)
+            }
+        } else {
+            OutlinedButton(
+                onClick = { viewModel.submitSurveyAndDecide() },
+                border = BorderStroke(1.dp, SafeGreen),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = SafeGreen),
+                modifier = Modifier.fillMaxWidth().height(44.dp)
+            ) {
+                Text("마이크 해제하고 통화 계속", fontSize = 12.sp)
+            }
+        }
+    }
+}
+
 
 // ── 통화 종료 화면 ───────────────────────────────────────────────
 

@@ -23,6 +23,29 @@ data class TranscriptItem(
     val isFinal: Boolean
 )
 
+/**
+ * 마이크 차단 후 상황 판단 설문 응답.
+ * null = 아직 응답 안 함
+ */
+data class LeakSurveyAnswers(
+    val q1UnknownPerson: Boolean? = null,  // 모르는 사람?
+    val q2UnknownNumber: Boolean? = null,  // 모르는 번호?
+    val q3SuspectScam: Boolean? = null,    // 보이스피싱 의심?
+    val q4VerifiedReal: Boolean? = null    // 실제 상황 확인했나요?
+) {
+    val allAnswered: Boolean
+        get() = q1UnknownPerson != null && q2UnknownNumber != null &&
+                q3SuspectScam != null && q4VerifiedReal != null
+
+    /** 의심 점수 0~3: 높을수록 보이스피싱 가능성 높음 */
+    val suspicionScore: Int
+        get() = listOf(q1UnknownPerson, q2UnknownNumber, q3SuspectScam).count { it == true }
+
+    /** 차단을 유지해야 하는 판단: 의심 2개 이상이고 실제 상황 미확인 */
+    val shouldKeepBlocked: Boolean
+        get() = suspicionScore >= 2 && q4VerifiedReal != true
+}
+
 class CallViewModel : ViewModel() {
     private val TAG = "CallViewModel"
 
@@ -53,6 +76,10 @@ class CallViewModel : ViewModel() {
     /** 로컬 누출 차단 경고 팝업 + 감지된 패턴 */
     private val _localLeakEvent = MutableStateFlow<InterventionEvent.LocalLeakBlocked?>(null)
     val localLeakEvent: StateFlow<InterventionEvent.LocalLeakBlocked?> = _localLeakEvent.asStateFlow()
+
+    /** 마이크 차단 후 설문 응답 상태 */
+    private val _surveyAnswers = MutableStateFlow(LeakSurveyAnswers())
+    val surveyAnswers: StateFlow<LeakSurveyAnswers> = _surveyAnswers.asStateFlow()
 
     // ── STT 모델 로딩 상태 ────────────────────────────────────────
     private val _isSttReady = MutableStateFlow(false)
@@ -199,9 +226,37 @@ class CallViewModel : ViewModel() {
         _showRemotePhishingWarning.value = false
     }
 
+    fun answerSurvey(
+        q1: Boolean? = null,
+        q2: Boolean? = null,
+        q3: Boolean? = null,
+        q4: Boolean? = null
+    ) {
+        _surveyAnswers.value = _surveyAnswers.value.copy(
+            q1UnknownPerson = q1 ?: _surveyAnswers.value.q1UnknownPerson,
+            q2UnknownNumber = q2 ?: _surveyAnswers.value.q2UnknownNumber,
+            q3SuspectScam   = q3 ?: _surveyAnswers.value.q3SuspectScam,
+            q4VerifiedReal  = q4 ?: _surveyAnswers.value.q4VerifiedReal
+        )
+    }
+
+    /** 설문 완료 후 결과에 따라 마이크 차단 유지 또는 해제 */
+    fun submitSurveyAndDecide() {
+        val answers = _surveyAnswers.value
+        if (answers.shouldKeepBlocked) {
+            // 보이스피싱 가능성 높음 → 차단 유지, 팝업만 닫음
+            _localLeakEvent.value = null
+            _surveyAnswers.value = LeakSurveyAnswers()
+            // 마이크는 여전히 차단 상태 유지
+        } else {
+            // 실제 상황으로 확인 → 마이크 해제
+            dismissLocalLeakWarning()
+        }
+    }
+
     fun dismissLocalLeakWarning() {
         _localLeakEvent.value = null
-        // 사용자가 직접 닫으면 마이크 다시 열어줌
+        _surveyAnswers.value = LeakSurveyAnswers()
         _isLocalMuted.value = false
         callService?.muteLocalMic(false)
     }
@@ -234,6 +289,7 @@ class CallViewModel : ViewModel() {
         _riskScore.value = RiskScore(0f, RiskLevel.SAFE, emptyList())
         _showRemotePhishingWarning.value = false
         _localLeakEvent.value = null
+        _surveyAnswers.value = LeakSurveyAnswers()
         _isLocalMuted.value = false
         _isRemoteMuted.value = false
     }

@@ -9,8 +9,7 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * WebRtcManager — 실제 P2P 음성 통화를 담당한다.
  *
  * 로컬 오디오  : JavaAudioDeviceModule.setSamplesReadyCallback → localAudioCallback (STT)
- * 원격 오디오  : JavaAudioDeviceModule 플레이아웃 콜백 → remoteAudioCallback (STT)
- *               (이 라이브러리 버전에는 AudioTrack.addSink 미지원)
+ * 원격 오디오  : onTrack → AudioTrack.addSink → remoteAudioCallback (STT)
  *
  * 시그널링 흐름:
  *   caller: startLocalAudioCapture() → createOffer() → setLocal → (서버 경유) → setRemote(answer)
@@ -108,11 +107,10 @@ class WebRtcManager(
     ) {
         val f = factory ?: return
 
-        // STUN 서버 (Google 공개 서버 사용)
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
+        // 온프레미스 환경: 같은 내부 망에서 host ICE 후보로 직접 연결되므로
+        // 외부 STUN/TURN 서버가 필요 없다. ICE 서버 목록을 비워두면
+        // 두 기기의 로컬 IP끼리 직접 P2P 연결을 시도한다.
+        val iceServers = emptyList<PeerConnection.IceServer>()
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             iceTransportsType = PeerConnection.IceTransportsType.ALL
@@ -138,8 +136,6 @@ class WebRtcManager(
             override fun onTrack(transceiver: RtpTransceiver?) {
                 val track = transceiver?.receiver?.track()
                 if (track is AudioTrack) {
-                    // 원격 오디오 트랙 수신 확인
-                    // PCM 인터셉트는 setAudioTrackSamplesReadyCallback 에서 처리
                     Log.d(tag, "원격 AudioTrack 수신 완료 (ID: ${track.id()})")
                 }
             }
@@ -275,9 +271,7 @@ class WebRtcManager(
     ) {
         isLoopbackMode = true   // 로컬 오디오 → 원격 STT도 전달
         val f = factory ?: return
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-        )
+        val iceServers = emptyList<PeerConnection.IceServer>()
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         }

@@ -9,10 +9,15 @@ import android.content.Intent
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import java.util.Locale
 import com.example.callguard.MainActivity
 import com.example.callguard.R
 import com.example.callguard.data.signaling.SignalingEvent
@@ -48,6 +53,7 @@ class CallService : LifecycleService() {
     lateinit var scamDetector: MockScamDetector
 
     private var signalingClient: WsSignalingClient? = null
+    private var tts: TextToSpeech? = null
 
     // ── 상태 Flow ────────────────────────────────────────────────
     private val _callState = MutableStateFlow(CallState.IDLE)
@@ -66,7 +72,40 @@ class CallService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         initComponents()
+        initTts()
         Log.d(TAG, "CallService 생성 완료")
+    }
+
+    private fun initTts() {
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.KOREAN
+            }
+        }
+    }
+
+    /**
+     * 노인 사용자가 화면을 보지 않더라도 인지할 수 있도록
+     * 강한 진동 패턴 + TTS 음성으로 즉시 알린다.
+     */
+    fun alertUserWithVibrationAndTts() {
+        // SOS 진동: 강하게 3회 반복 (500ms on / 300ms off)
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(VIBRATOR_SERVICE) as Vibrator
+        }
+        val pattern = longArrayOf(0, 600, 250, 600, 250, 600)
+        vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+
+        // TTS 경고 — 화면을 보도록 유도
+        tts?.speak(
+            "주의! 개인정보 유출 위험이 감지되었습니다. 마이크가 차단되었습니다. 화면을 확인하세요.",
+            TextToSpeech.QUEUE_FLUSH,
+            null,
+            "leak_alert"
+        )
     }
 
     private fun initComponents() {
@@ -76,9 +115,9 @@ class CallService : LifecycleService() {
 
         val localLeakDetector = LocalLeakDetector { triggerPhrase, partialText ->
             Log.w(TAG, "개인정보 누출 감지! '$triggerPhrase' → 즉시 마이크 차단")
-            // 즉시 마이크 뮤트
             webRtcManager.setLocalAudioMuted(true)
-            // 개입 이벤트 발행
+            // 노인 사용자가 화면을 보지 않더라도 인지하도록 진동 + TTS 알림
+            alertUserWithVibrationAndTts()
             lifecycleScope.launch {
                 _interventionEvent.emit(InterventionEvent.LocalLeakBlocked(triggerPhrase, partialText))
             }
@@ -130,9 +169,22 @@ class CallService : LifecycleService() {
      * @param serverIp 시그널링 서버 IP (예: "192.168.0.10")
      * @param roomId   공유 방 코드
      */
-    fun joinRoom(serverIp: String, roomId: String) {
+    fun joinRoom(serverAddress: String, roomId: String) {
         _callState.value = CallState.CONNECTING
-        val url = "ws://$serverIp:8080"
+        // 입력이 ws:// 또는 wss://로 시작하면 그대로 사용, 아니면 ws://IP:8080 으로 구성
+        val url = when {
+            serverAddress.startsWith("ws://") || serverAddress.startsWith("wss://") -> {
+                // 포트가 없고 plain IP인 경우 :8080 추가
+                if (!serverAddress.contains(Regex(":\\d+$")) &&
+                    serverAddress.startsWith("ws://") &&
+                    serverAddress.removePrefix("ws://").matches(Regex("[\\d.]+"))) {
+                    "$serverAddress:8080"
+                } else {
+                    serverAddress
+                }
+            }
+            else -> "ws://$serverAddress:8080"
+        }
 
         signalingClient = WsSignalingClient(url, roomId)
 
@@ -143,7 +195,7 @@ class CallService : LifecycleService() {
         }
 
         signalingClient!!.connect()
-        Log.d(TAG, "시그널링 서버 연결 시도: $url / 방: $roomId")
+        Log.d(TAG, "시그널링 서버 연결 시도: $url / 방: $roomId (입력: $serverAddress)")
     }
 
     private fun handleSignalingEvent(event: SignalingEvent) {
@@ -294,6 +346,8 @@ class CallService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
         hangUpCall()
         super.onDestroy()
     }
