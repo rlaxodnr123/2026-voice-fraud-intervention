@@ -15,14 +15,29 @@ data class RiskScore(
 )
 
 /**
+ * 마이크/원격 음성 차단을 일으킨 원인.
+ * 설문 완료 후 어떤 자원을 해제해야 하는지 판단하는 데 쓰인다.
+ */
+enum class BlockReason {
+    /** 내 발화에서 개인정보 누출 패턴 감지 → 내 마이크만 차단 */
+    LOCAL_LEAK,
+    /** 상대 발화에서 피싱 위험 SCAM 판정 → 내 마이크 + 상대 음성 모두 차단 */
+    REMOTE_PHISHING
+}
+
+/**
  * 개입 이벤트 — 경고 팝업에 표시할 정보를 담는다.
  *
- * REMOTE_PHISHING  : 상대방 발화에서 피싱 패턴 감지 (경고 준비)
- * LOCAL_LEAK_BLOCKED: 내가 개인정보를 말하려는 순간 마이크 즉시 차단
+ * REMOTE_PHISHING_DETECTED: 상대방 발화에서 피싱 뉘앙스(SUSPICIOUS) 감지, 경고만 표시
+ * REMOTE_PHISHING_BLOCKED : 상대방 발화 SCAM 확정 → 내 마이크+상대 음성 차단 후 설문 시작
+ * LOCAL_LEAK_BLOCKED      : 내가 개인정보를 말하려는 순간 마이크 즉시 차단 후 설문 시작
  */
 sealed class InterventionEvent {
-    /** 상대방이 피싱 뉘앙스 발화 */
+    /** 상대방이 피싱 뉘앙스 발화 (SUSPICIOUS, 경고만) */
     data class RemotePhishingDetected(val riskScore: RiskScore) : InterventionEvent()
+
+    /** 상대방 발화 SCAM 확정 → 양쪽 음성 차단 + 설문 시작 */
+    data class RemotePhishingBlocked(val riskScore: RiskScore) : InterventionEvent()
 
     /** 사용자 발화에서 개인정보 누출 감지 → 마이크 즉시 차단 */
     data class LocalLeakBlocked(

@@ -23,6 +23,7 @@ import com.example.callguard.R
 import com.example.callguard.data.signaling.SignalingEvent
 import com.example.callguard.data.signaling.WsSignalingClient
 import com.example.callguard.data.webrtc.WebRtcManager
+import com.example.callguard.domain.interfaces.BlockReason
 import com.example.callguard.domain.interfaces.InterventionEvent
 import com.example.callguard.domain.interfaces.RiskLevel
 import com.example.callguard.domain.pipeline.AudioProcessingPipeline
@@ -30,6 +31,7 @@ import com.example.callguard.domain.pipeline.LocalLeakDetector
 import com.example.callguard.domain.pipeline.MockInterventionEngine
 import com.example.callguard.domain.pipeline.MockScamDetector
 import com.example.callguard.domain.pipeline.MockSpeechRecognizer
+import com.example.callguard.domain.pipeline.VoiceSurveyController
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -51,9 +53,17 @@ class CallService : LifecycleService() {
     lateinit var localSpeechRecognizer: MockSpeechRecognizer
     lateinit var remoteSpeechRecognizer: MockSpeechRecognizer
     lateinit var scamDetector: MockScamDetector
+    lateinit var voiceSurveyController: VoiceSurveyController
+        private set
 
     private var signalingClient: WsSignalingClient? = null
     private var tts: TextToSpeech? = null
+    private var isTtsReady = false
+    // TTS 엔진 초기화가 끝나기 전에 speak()가 호출되는 레이스 컨디션 방지용 큐
+    private val pendingTtsQueue = mutableListOf<Pair<String, Int>>()
+
+    // 현재 진행 중인 차단/설문의 원인. null이면 차단/설문이 진행 중이 아님 (중복 트리거 방지 + 해제 시 무엇을 풀어야 하는지 판단)
+    private var activeBlockReason: BlockReason? = null
 
     // ── 상태 Flow ────────────────────────────────────────────────
     private val _callState = MutableStateFlow(CallState.IDLE)
@@ -61,6 +71,13 @@ class CallService : LifecycleService() {
 
     private val _interventionEvent = MutableSharedFlow<InterventionEvent>(extraBufferCapacity = 8)
     val interventionEvent: SharedFlow<InterventionEvent> = _interventionEvent
+
+    // 음성 설문 진행 중 답변/완료 이벤트
+    private val _voiceSurveyAnswerEvent = MutableSharedFlow<Pair<Int, Boolean>>(extraBufferCapacity = 8)
+    val voiceSurveyAnswerEvent: SharedFlow<Pair<Int, Boolean>> = _voiceSurveyAnswerEvent
+
+    private val _voiceSurveyCompleted = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    val voiceSurveyCompleted: SharedFlow<Unit> = _voiceSurveyCompleted
 
     enum class CallState { IDLE, CONNECTING, RINGING, CONNECTED, DISCONNECTED }
 
@@ -79,8 +96,31 @@ class CallService : LifecycleService() {
     private fun initTts() {
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.KOREAN
+                val result = tts?.setLanguage(Locale.KOREAN)
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.e(TAG, "TTS 한국어 데이터 없음 (result=$result) — 기기에 한국어 TTS 음성 데이터 설치 필요")
+                }
+                isTtsReady = true
+                Log.d(TAG, "TTS 초기화 완료 — 대기 중이던 ${pendingTtsQueue.size}건 재생")
+                pendingTtsQueue.forEach { (text, mode) -> tts?.speak(text, mode, null, "tts_${System.nanoTime()}") }
+                pendingTtsQueue.clear()
+            } else {
+                Log.e(TAG, "TTS 초기화 실패 (status=$status) — 이 기기엔 음성 경고가 출력되지 않습니다")
             }
+        }
+    }
+
+    /**
+     * 큐를 거쳐 TTS를 재생한다. 엔진이 아직 준비되지 않았으면 큐에 쌓아두고
+     * 초기화 완료 시 순서대로 재생한다(레이스 컨디션으로 경고음이 조용히 사라지는 것 방지).
+     */
+    fun speak(text: String, flush: Boolean = false) {
+        val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        if (isTtsReady) {
+            tts?.speak(text, mode, null, "tts_${System.nanoTime()}")
+        } else {
+            Log.w(TAG, "TTS 아직 준비 안 됨 — 큐에 저장: $text")
+            pendingTtsQueue.add(text to mode)
         }
     }
 
@@ -88,7 +128,9 @@ class CallService : LifecycleService() {
      * 노인 사용자가 화면을 보지 않더라도 인지할 수 있도록
      * 강한 진동 패턴 + TTS 음성으로 즉시 알린다.
      */
-    fun alertUserWithVibrationAndTts() {
+    fun alertUserWithVibrationAndTts(
+        message: String = "주의! 개인정보 유출 위험이 감지되었습니다. 마이크가 차단되었습니다. 화면을 확인하세요."
+    ) {
         // SOS 진동: 강하게 3회 반복 (500ms on / 300ms off)
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             (getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
@@ -100,12 +142,14 @@ class CallService : LifecycleService() {
         vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
 
         // TTS 경고 — 화면을 보도록 유도
-        tts?.speak(
-            "주의! 개인정보 유출 위험이 감지되었습니다. 마이크가 차단되었습니다. 화면을 확인하세요.",
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "leak_alert"
-        )
+        speak(message, flush = true)
+    }
+
+    /** 설문 종료 후 어떤 차단을 해제해야 하는지 판단하기 위해 원인을 꺼내고 초기화한다. */
+    fun consumeBlockReason(): BlockReason {
+        val reason = activeBlockReason ?: BlockReason.LOCAL_LEAK
+        activeBlockReason = null
+        return reason
     }
 
     private fun initComponents() {
@@ -113,21 +157,43 @@ class CallService : LifecycleService() {
         remoteSpeechRecognizer = MockSpeechRecognizer(this)
         scamDetector = MockScamDetector()
 
+        voiceSurveyController = VoiceSurveyController(
+            speak = { text -> speak(text) },
+            onAnswer = { questionIndex, answer ->
+                lifecycleScope.launch { _voiceSurveyAnswerEvent.emit(questionIndex to answer) }
+            },
+            onCompleted = {
+                lifecycleScope.launch { _voiceSurveyCompleted.emit(Unit) }
+            }
+        )
+
+        // 마이크 차단 중에도 WebRtcManager는 로컬 STT 피드를 계속 보내준다 (상대방 전송만 끊김)
+        // → 차단 후 음성 설문 응답을 같은 STT 스트림으로 받을 수 있다.
+        lifecycleScope.launch {
+            localSpeechRecognizer.transcript.collect { text ->
+                if (voiceSurveyController.isActive.value) {
+                    voiceSurveyController.onLocalTranscript(text)
+                }
+            }
+        }
+
         val localLeakDetector = LocalLeakDetector { triggerPhrase, partialText ->
+            if (activeBlockReason != null) return@LocalLeakDetector  // 이미 차단/설문 진행 중이면 중복 트리거 방지
             Log.w(TAG, "개인정보 누출 감지! '$triggerPhrase' → 즉시 마이크 차단")
+            activeBlockReason = BlockReason.LOCAL_LEAK
             webRtcManager.setLocalAudioMuted(true)
             // 노인 사용자가 화면을 보지 않더라도 인지하도록 진동 + TTS 알림
             alertUserWithVibrationAndTts()
             lifecycleScope.launch {
                 _interventionEvent.emit(InterventionEvent.LocalLeakBlocked(triggerPhrase, partialText))
             }
+            // 경고 음성 뒤에 이어서 음성 설문을 시작한다 (QUEUE_ADD로 알림 뒤에 자동 재생)
+            voiceSurveyController.start()
         }
 
-        val interventionEngine = MockInterventionEngine { riskLevel ->
-            if (riskLevel == RiskLevel.SCAM) {
-                webRtcManager.setRemoteAudioMuted(true)
-            }
-        }
+        // SCAM 확정은 아래 riskScoreFlow 콜렉터에서 양쪽 음성 차단 + 설문까지 전부 처리하므로
+        // 여기서는 더 이상 개입하지 않는다 (MockInterventionEngine은 SUSPICIOUS 경고 emit용으로만 사용).
+        val interventionEngine = MockInterventionEngine { }
 
         audioPipeline = AudioProcessingPipeline(
             localSpeechRecognizer,
@@ -147,6 +213,23 @@ class CallService : LifecycleService() {
         lifecycleScope.launch {
             audioPipeline.interventionEvent.collect { event ->
                 _interventionEvent.emit(event)
+            }
+        }
+
+        // 상대방 발화가 SCAM으로 확정되면: 내 마이크 + 상대 음성 모두 차단 → 경고 → 음성 설문 시작
+        lifecycleScope.launch {
+            audioPipeline.riskScoreFlow.collect { risk ->
+                if (risk.level == RiskLevel.SCAM && activeBlockReason == null) {
+                    Log.w(TAG, "상대방 발화 보이스피싱 확정 (키워드: ${risk.matchedKeywords}) → 양쪽 음성 차단")
+                    activeBlockReason = BlockReason.REMOTE_PHISHING
+                    webRtcManager.setLocalAudioMuted(true)
+                    webRtcManager.setRemoteAudioMuted(true)
+                    alertUserWithVibrationAndTts(
+                        "주의! 보이스피싱이 의심되는 통화입니다. 마이크와 상대방 음성이 차단되었습니다. 설문에 답해주세요."
+                    )
+                    _interventionEvent.emit(InterventionEvent.RemotePhishingBlocked(risk))
+                    voiceSurveyController.start()
+                }
             }
         }
     }
@@ -284,12 +367,16 @@ class CallService : LifecycleService() {
     fun muteLocalMic(mute: Boolean) = webRtcManager.setLocalAudioMuted(mute)
     fun muteRemoteAudio(mute: Boolean) = webRtcManager.setRemoteAudioMuted(mute)
 
+    fun startVoiceSurvey() = voiceSurveyController.start()
+    fun stopVoiceSurvey() = voiceSurveyController.stop()
+
     fun hangUpCall() {
         signalingClient?.sendCallEnd()
         signalingClient?.disconnect()
         signalingClient = null
         webRtcManager.stopCall()
         audioPipeline.reset()
+        activeBlockReason = null
         _callState.value = CallState.IDLE
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

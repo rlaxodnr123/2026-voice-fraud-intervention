@@ -8,6 +8,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.callguard.domain.interfaces.BlockReason
 import com.example.callguard.domain.interfaces.InterventionEvent
 import com.example.callguard.domain.interfaces.RiskLevel
 import com.example.callguard.domain.interfaces.RiskScore
@@ -77,9 +78,20 @@ class CallViewModel : ViewModel() {
     private val _localLeakEvent = MutableStateFlow<InterventionEvent.LocalLeakBlocked?>(null)
     val localLeakEvent: StateFlow<InterventionEvent.LocalLeakBlocked?> = _localLeakEvent.asStateFlow()
 
+    /** 상대방 발화 SCAM 확정 → 양쪽 음성 차단 + 설문 시작 팝업 */
+    private val _remotePhishingBlockedEvent = MutableStateFlow<InterventionEvent.RemotePhishingBlocked?>(null)
+    val remotePhishingBlockedEvent: StateFlow<InterventionEvent.RemotePhishingBlocked?> = _remotePhishingBlockedEvent.asStateFlow()
+
     /** 마이크 차단 후 설문 응답 상태 */
     private val _surveyAnswers = MutableStateFlow(LeakSurveyAnswers())
     val surveyAnswers: StateFlow<LeakSurveyAnswers> = _surveyAnswers.asStateFlow()
+
+    // ── 음성 설문 상태 (차단 후 TTS로 묻고 STT로 답을 받는다) ────────
+    private val _voiceSurveyQuestionIndex = MutableStateFlow(-1)
+    val voiceSurveyQuestionIndex: StateFlow<Int> = _voiceSurveyQuestionIndex.asStateFlow()
+
+    private val _voiceSurveyListening = MutableStateFlow(false)
+    val voiceSurveyListening: StateFlow<Boolean> = _voiceSurveyListening.asStateFlow()
 
     // ── STT 모델 로딩 상태 ────────────────────────────────────────
     private val _isSttReady = MutableStateFlow(false)
@@ -127,6 +139,35 @@ class CallViewModel : ViewModel() {
                 }
             }
 
+            // 음성 설문: 진행 중인 질문 번호 / 듣고 있는지 여부
+            viewModelScope.launch {
+                bound.voiceSurveyController.currentQuestionIndex.collect { idx ->
+                    _voiceSurveyQuestionIndex.value = idx
+                }
+            }
+            viewModelScope.launch {
+                bound.voiceSurveyController.isListening.collect { listening ->
+                    _voiceSurveyListening.value = listening
+                }
+            }
+            // 음성 설문: 질문별 답변이 들어오면 기존 설문 상태에 그대로 반영
+            viewModelScope.launch {
+                bound.voiceSurveyAnswerEvent.collect { (questionIndex, answer) ->
+                    when (questionIndex) {
+                        0 -> answerSurvey(q1 = answer)
+                        1 -> answerSurvey(q2 = answer)
+                        2 -> answerSurvey(q3 = answer)
+                        3 -> answerSurvey(q4 = answer)
+                    }
+                }
+            }
+            // 음성 설문: 4문항 모두 응답 완료 시 자동으로 결과 판정/마이크 처리
+            viewModelScope.launch {
+                bound.voiceSurveyCompleted.collect {
+                    submitSurveyAndDecide()
+                }
+            }
+
             // STT 모델 로딩 완료 감지
             viewModelScope.launch {
                 bound.localSpeechRecognizer.isModelReady.collect { ready ->
@@ -147,10 +188,16 @@ class CallViewModel : ViewModel() {
     private fun handleIntervention(event: InterventionEvent) {
         when (event) {
             is InterventionEvent.RemotePhishingDetected -> {
-                if (event.riskScore.level == RiskLevel.SCAM) {
+                // SCAM 확정은 RemotePhishingBlocked가 전담 (양쪽 음성 차단 + 설문) — 여기서는 SUSPICIOUS 경고만 표시
+                if (event.riskScore.level == RiskLevel.SUSPICIOUS) {
                     _showRemotePhishingWarning.value = true
-                    _isRemoteMuted.value = true
                 }
+            }
+            is InterventionEvent.RemotePhishingBlocked -> {
+                // 마이크 + 상대 음성은 서비스에서 이미 차단됨 — UI만 업데이트
+                _remotePhishingBlockedEvent.value = event
+                _isLocalMuted.value = true
+                _isRemoteMuted.value = true
             }
             is InterventionEvent.LocalLeakBlocked -> {
                 // 마이크는 서비스에서 이미 뮤트됨 — UI만 업데이트
@@ -240,22 +287,41 @@ class CallViewModel : ViewModel() {
         )
     }
 
-    /** 설문 완료 후 결과에 따라 마이크 차단 유지 또는 해제 */
+    /**
+     * 설문 완료 후 결과에 따라:
+     *  - 보이스피싱 확정 → 통화 종료
+     *  - 보이스피싱 아님 → 마이크 자동 재개 (REMOTE_PHISHING 원인이었다면 상대 음성도 재개)
+     */
     fun submitSurveyAndDecide() {
+        callService?.stopVoiceSurvey()
         val answers = _surveyAnswers.value
+        val reason = callService?.consumeBlockReason() ?: BlockReason.LOCAL_LEAK
+
         if (answers.shouldKeepBlocked) {
-            // 보이스피싱 가능성 높음 → 차단 유지, 팝업만 닫음
+            // 보이스피싱 확정 → 통화 종료
             _localLeakEvent.value = null
+            _remotePhishingBlockedEvent.value = null
             _surveyAnswers.value = LeakSurveyAnswers()
-            // 마이크는 여전히 차단 상태 유지
+            endCall()
         } else {
-            // 실제 상황으로 확인 → 마이크 해제
-            dismissLocalLeakWarning()
+            // 보이스피싱 아님으로 확인 → 마이크(및 필요 시 상대 음성) 자동 재개
+            _localLeakEvent.value = null
+            _remotePhishingBlockedEvent.value = null
+            _surveyAnswers.value = LeakSurveyAnswers()
+            _isLocalMuted.value = false
+            callService?.muteLocalMic(false)
+            if (reason == BlockReason.REMOTE_PHISHING) {
+                _isRemoteMuted.value = false
+                callService?.muteRemoteAudio(false)
+            }
         }
     }
 
     fun dismissLocalLeakWarning() {
+        callService?.stopVoiceSurvey()
+        callService?.consumeBlockReason()
         _localLeakEvent.value = null
+        _remotePhishingBlockedEvent.value = null
         _surveyAnswers.value = LeakSurveyAnswers()
         _isLocalMuted.value = false
         callService?.muteLocalMic(false)
@@ -289,8 +355,11 @@ class CallViewModel : ViewModel() {
         _riskScore.value = RiskScore(0f, RiskLevel.SAFE, emptyList())
         _showRemotePhishingWarning.value = false
         _localLeakEvent.value = null
+        _remotePhishingBlockedEvent.value = null
         _surveyAnswers.value = LeakSurveyAnswers()
         _isLocalMuted.value = false
         _isRemoteMuted.value = false
+        _voiceSurveyQuestionIndex.value = -1
+        _voiceSurveyListening.value = false
     }
 }

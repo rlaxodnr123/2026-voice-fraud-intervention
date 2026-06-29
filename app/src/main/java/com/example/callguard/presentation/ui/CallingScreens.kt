@@ -52,8 +52,11 @@ fun CallGuardApp(viewModel: CallViewModel) {
     val callState by viewModel.callState.collectAsState()
     val showRemoteWarning by viewModel.showRemotePhishingWarning.collectAsState()
     val localLeakEvent by viewModel.localLeakEvent.collectAsState()
+    val remotePhishingBlockedEvent by viewModel.remotePhishingBlockedEvent.collectAsState()
     val surveyAnswers by viewModel.surveyAnswers.collectAsState()
     val isSttReady by viewModel.isSttReady.collectAsState()
+    val voiceQuestionIndex by viewModel.voiceSurveyQuestionIndex.collectAsState()
+    val voiceListening by viewModel.voiceSurveyListening.collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize(), color = ThemeBackground) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -93,11 +96,21 @@ fun CallGuardApp(viewModel: CallViewModel) {
             }
 
             // ── 팝업 레이어 ──────────────────────────────────────
-            // 우선순위: 로컬 누출 경고(설문) > 원격 피싱 경고
+            // 우선순위: 로컬 누출 설문 > 원격 피싱 확정 설문 > 원격 피싱 경고(SUSPICIOUS)
             localLeakEvent?.let { event ->
                 LocalLeakSurveyOverlay(
                     event = event,
                     surveyAnswers = surveyAnswers,
+                    voiceQuestionIndex = voiceQuestionIndex,
+                    voiceListening = voiceListening,
+                    viewModel = viewModel
+                )
+            } ?: remotePhishingBlockedEvent?.let { event ->
+                RemotePhishingSurveyOverlay(
+                    event = event,
+                    surveyAnswers = surveyAnswers,
+                    voiceQuestionIndex = voiceQuestionIndex,
+                    voiceListening = voiceListening,
                     viewModel = viewModel
                 )
             } ?: run {
@@ -666,6 +679,8 @@ fun RemotePhishingWarningOverlay(viewModel: CallViewModel) {
 fun LocalLeakSurveyOverlay(
     event: InterventionEvent.LocalLeakBlocked,
     surveyAnswers: LeakSurveyAnswers,
+    voiceQuestionIndex: Int,
+    voiceListening: Boolean,
     viewModel: CallViewModel
 ) {
     Dialog(onDismissRequest = {}) {
@@ -714,10 +729,20 @@ fun LocalLeakSurveyOverlay(
                 item {
                     Divider(color = AccentRed.copy(0.3f))
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        "상황 확인 설문",
-                        color = WarningAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "상황 확인 설문",
+                            color = WarningAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        if (voiceListening) {
+                            Icon(Icons.Filled.Mic, contentDescription = null, tint = PrimaryCyan, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("듣고 있어요... \"예\" 또는 \"아니오\"라고 말해주세요", color = PrimaryCyan, fontSize = 11.sp)
+                        } else {
+                            Text("터치 또는 음성으로 답변할 수 있어요", color = TextDark, fontSize = 11.sp)
+                        }
+                    }
                 }
 
                 item {
@@ -725,6 +750,7 @@ fun LocalLeakSurveyOverlay(
                         number = "1",
                         question = "모르는 사람에게\n전화가 왔나요?",
                         answer = surveyAnswers.q1UnknownPerson,
+                        isVoiceActive = voiceQuestionIndex == 0,
                         onYes = { viewModel.answerSurvey(q1 = true) },
                         onNo  = { viewModel.answerSurvey(q1 = false) }
                     )
@@ -734,6 +760,7 @@ fun LocalLeakSurveyOverlay(
                         number = "2",
                         question = "저장되지 않은\n모르는 번호인가요?",
                         answer = surveyAnswers.q2UnknownNumber,
+                        isVoiceActive = voiceQuestionIndex == 1,
                         onYes = { viewModel.answerSurvey(q2 = true) },
                         onNo  = { viewModel.answerSurvey(q2 = false) }
                     )
@@ -743,6 +770,7 @@ fun LocalLeakSurveyOverlay(
                         number = "3",
                         question = "보이스피싱이\n의심되시나요?",
                         answer = surveyAnswers.q3SuspectScam,
+                        isVoiceActive = voiceQuestionIndex == 2,
                         onYes = { viewModel.answerSurvey(q3 = true) },
                         onNo  = { viewModel.answerSurvey(q3 = false) }
                     )
@@ -752,6 +780,141 @@ fun LocalLeakSurveyOverlay(
                         number = "4",
                         question = "가족·지인과의\n실제 긴급 상황인가요?",
                         answer = surveyAnswers.q4VerifiedReal,
+                        isVoiceActive = voiceQuestionIndex == 3,
+                        onYes = { viewModel.answerSurvey(q4 = true) },
+                        onNo  = { viewModel.answerSurvey(q4 = false) }
+                    )
+                }
+
+                // ── 결과 & 액션 버튼 ──
+                item {
+                    if (surveyAnswers.allAnswered) {
+                        SurveyResultSection(surveyAnswers, viewModel)
+                    } else {
+                        // 설문 미완료 시 전화 끊기만 노출
+                        Button(
+                            onClick = { viewModel.endCall() },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentRed),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(50.dp)
+                        ) {
+                            Text("전화 끊기 (권장)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── 경고 팝업 3: 원격 피싱 확정 차단 (양쪽 음성 차단) + 상황 확인 설문 ──
+
+@Composable
+fun RemotePhishingSurveyOverlay(
+    event: InterventionEvent.RemotePhishingBlocked,
+    surveyAnswers: LeakSurveyAnswers,
+    voiceQuestionIndex: Int,
+    voiceListening: Boolean,
+    viewModel: CallViewModel
+) {
+    Dialog(onDismissRequest = {}) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A0005)),
+            modifier = Modifier.fillMaxWidth().border(2.dp, AccentRed, RoundedCornerShape(24.dp))
+        ) {
+            LazyColumn(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // ── 헤더 ──
+                item {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "마이크와 상대방 음성이 차단되었습니다",
+                            color = AccentRed, fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(AccentRed.copy(0.15f))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                "감지: ${event.riskScore.matchedKeywords.joinToString(", ")}",
+                                color = AccentRed, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "상대방의 발화에서 보이스피싱 위험이 감지되었습니다.\n아래 질문에 답해 주세요.",
+                            color = TextLight, fontSize = 14.sp,
+                            textAlign = TextAlign.Center, lineHeight = 20.sp
+                        )
+                    }
+                }
+
+                // ── 설문 문항 ──
+                item {
+                    Divider(color = AccentRed.copy(0.3f))
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "상황 확인 설문",
+                            color = WarningAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        if (voiceListening) {
+                            Icon(Icons.Filled.Mic, contentDescription = null, tint = PrimaryCyan, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("듣고 있어요... \"예\" 또는 \"아니오\"라고 말해주세요", color = PrimaryCyan, fontSize = 11.sp)
+                        } else {
+                            Text("터치 또는 음성으로 답변할 수 있어요", color = TextDark, fontSize = 11.sp)
+                        }
+                    }
+                }
+
+                item {
+                    SurveyQuestion(
+                        number = "1",
+                        question = "모르는 사람에게\n전화가 왔나요?",
+                        answer = surveyAnswers.q1UnknownPerson,
+                        isVoiceActive = voiceQuestionIndex == 0,
+                        onYes = { viewModel.answerSurvey(q1 = true) },
+                        onNo  = { viewModel.answerSurvey(q1 = false) }
+                    )
+                }
+                item {
+                    SurveyQuestion(
+                        number = "2",
+                        question = "저장되지 않은\n모르는 번호인가요?",
+                        answer = surveyAnswers.q2UnknownNumber,
+                        isVoiceActive = voiceQuestionIndex == 1,
+                        onYes = { viewModel.answerSurvey(q2 = true) },
+                        onNo  = { viewModel.answerSurvey(q2 = false) }
+                    )
+                }
+                item {
+                    SurveyQuestion(
+                        number = "3",
+                        question = "보이스피싱이\n의심되시나요?",
+                        answer = surveyAnswers.q3SuspectScam,
+                        isVoiceActive = voiceQuestionIndex == 2,
+                        onYes = { viewModel.answerSurvey(q3 = true) },
+                        onNo  = { viewModel.answerSurvey(q3 = false) }
+                    )
+                }
+                item {
+                    SurveyQuestion(
+                        number = "4",
+                        question = "가족·지인과의\n실제 긴급 상황인가요?",
+                        answer = surveyAnswers.q4VerifiedReal,
+                        isVoiceActive = voiceQuestionIndex == 3,
                         onYes = { viewModel.answerSurvey(q4 = true) },
                         onNo  = { viewModel.answerSurvey(q4 = false) }
                     )
@@ -783,11 +946,22 @@ private fun SurveyQuestion(
     number: String,
     question: String,
     answer: Boolean?,
+    isVoiceActive: Boolean = false,
     onYes: () -> Unit,
     onNo: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isVoiceActive)
+                    Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(PrimaryCyan.copy(0.1f))
+                        .border(1.dp, PrimaryCyan.copy(0.6f), RoundedCornerShape(10.dp))
+                        .padding(6.dp)
+                else Modifier
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 번호 뱃지
@@ -876,9 +1050,9 @@ private fun SurveyResultSection(answers: LeakSurveyAnswers, viewModel: CallViewM
                 Spacer(Modifier.height(4.dp))
                 Text(
                     if (isHighRisk)
-                        "마이크 차단을 유지합니다.\n절대 개인정보를 알려주지 마세요."
+                        "보이스피싱으로 판단되어 통화를 종료합니다.\n절대 개인정보를 알려주지 마세요."
                     else
-                        "마이크 차단을 해제합니다.\n하지만 여전히 주의가 필요합니다.",
+                        "마이크 차단을 해제하고 통화를 재개합니다.\n하지만 여전히 주의가 필요합니다.",
                     color = TextLight, fontSize = 12.sp,
                     textAlign = TextAlign.Center, lineHeight = 18.sp
                 )
@@ -898,16 +1072,16 @@ private fun SurveyResultSection(answers: LeakSurveyAnswers, viewModel: CallViewM
             )
         }
 
-        // 보이스피싱 위험 시: 차단 유지 후 닫기 | 실제 상황 시: 마이크 해제
+        // 보이스피싱 위험 시: 통화 종료 확정 | 실제 상황 시: 마이크 해제하고 재개
         if (isHighRisk) {
             OutlinedButton(
                 onClick = { viewModel.submitSurveyAndDecide() },
-                border = BorderStroke(1.dp, TextDark),
+                border = BorderStroke(1.dp, AccentRed),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextDark),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentRed),
                 modifier = Modifier.fillMaxWidth().height(44.dp)
             ) {
-                Text("마이크 차단 유지하고 통화 계속", fontSize = 12.sp)
+                Text("판정 확정 (통화 종료)", fontSize = 12.sp)
             }
         } else {
             OutlinedButton(
