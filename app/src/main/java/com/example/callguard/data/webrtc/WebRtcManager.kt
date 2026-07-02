@@ -28,8 +28,9 @@ class WebRtcManager(
     private var localAudioTrack: AudioTrack? = null
     private var localAudioSource: AudioSource? = null
 
-    // 실제 P2P 통화에서 수신한 상대방 AudioTrack (뮤트 제어용)
+    // 실제 P2P 통화에서 수신한 상대방 AudioTrack (뮤트 제어 + STT용 PCM 캡처)
     private var remoteAudioTrack: AudioTrack? = null
+    private var remoteAudioSink: AudioTrackSink? = null
 
     // 루프백 전용 두 번째 PeerConnection
     private var loopbackRemotePc: PeerConnection? = null
@@ -58,7 +59,7 @@ class WebRtcManager(
             // 로컬 마이크 PCM 프레임 → 로컬 STT
             // 루프백 모드에서는 원격 STT(피싱 감지)에도 동일 오디오 전달
             .setSamplesReadyCallback { samples ->
-                // 마이크 차단(isLocalMuted)은 상대방에게 보내는 트랙(setEnabled)만 끊는다.
+                // 마이크 차단(isLocalMuted)은 상대방에게 보내는 오디오 볼륨(setVolume)만 끊는다.
                 // STT 분석(누출 감지 + 차단 후 음성 설문 응답)은 마이크가 꺼진 동안에도 계속 필요하므로
                 // 여기서는 차단 여부와 무관하게 항상 로컬 STT로 피드한다.
                 localAudioCallback(samples.data, samples.sampleRate, samples.channelCount)
@@ -144,9 +145,15 @@ class WebRtcManager(
                     remoteAudioTrack = track
                     // 현재 뮤트 상태를 새로 들어온 트랙에도 즉시 반영
                     track.setEnabled(!isRemoteMuted)
-                    // 주의: 이 라이브러리(im.conversations.webrtc)의 AudioTrack은 PCM sink API를
-                    // 제공하지 않아 실제 P2P 통화에서는 상대방 음성을 STT로 변환할 수 없다.
-                    // 실시간 차단/재개(setEnabled)는 가능하지만 원격 발화 인식은 루프백/시뮬레이션 모드에서만 동작한다.
+
+                    // 디코딩된 원격 PCM을 직접 받아 원격 STT(공격자 발화 분석)로 전달
+                    val sink = AudioTrackSink { audioData, _, sampleRate, channelCount, _, _ ->
+                        val bytes = ByteArray(audioData.remaining())
+                        audioData.get(bytes)
+                        remoteAudioCallback(bytes, sampleRate, channelCount)
+                    }
+                    remoteAudioSink = sink
+                    track.addSink(sink)
                 }
             }
         }) ?: return
@@ -239,8 +246,12 @@ class WebRtcManager(
 
     fun setLocalAudioMuted(mute: Boolean) {
         isLocalMuted = mute
-        localAudioTrack?.setEnabled(!mute)
-        Log.d(tag, "로컬 마이크 뮤트: $mute")
+        // setEnabled(false) 대신 setVolume(0.0)을 쓴다.
+        // setEnabled(false)는 트랙 자체를 비활성화해 실제 기기에서 캡처(AudioRecord)까지 같이 멈출 수 있어서,
+        // 차단 중에도 계속 필요한 로컬 STT(음성 설문 응답 인식)가 끊기는 문제가 있었다.
+        // setVolume(0.0)은 상대방에게 전달되는 오디오만 무음 처리하고 캡처/SamplesReadyCallback은 그대로 유지한다.
+        localAudioTrack?.setVolume(if (mute) 0.0 else 1.0)
+        Log.d(tag, "로컬 마이크 뮤트(상대방 전달 음소거): $mute")
     }
 
     fun setRemoteAudioMuted(mute: Boolean) {
@@ -252,6 +263,8 @@ class WebRtcManager(
     }
 
     fun stopCall() {
+        remoteAudioSink?.let { sink -> remoteAudioTrack?.removeSink(sink) }
+        remoteAudioSink = null
         peerConnection?.close()
         localAudioSource?.dispose()
         loopbackRemotePc?.close()

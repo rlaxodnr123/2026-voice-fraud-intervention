@@ -700,7 +700,7 @@ fun LocalLeakSurveyOverlay(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            "마이크가 차단되었습니다",
+                            "마이크와 상대방 음성이 차단되었습니다",
                             color = AccentRed, fontSize = 20.sp,
                             fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center
                         )
@@ -834,7 +834,8 @@ fun RemotePhishingSurveyOverlay(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            "마이크와 상대방 음성이 차단되었습니다",
+                            if (event.remoteAlsoMuted) "마이크와 상대방 음성이 차단되었습니다"
+                            else "마이크가 차단되었습니다",
                             color = AccentRed, fontSize = 20.sp,
                             fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.Center
                         )
@@ -852,7 +853,10 @@ fun RemotePhishingSurveyOverlay(
                         }
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "상대방의 발화에서 보이스피싱 위험이 감지되었습니다.\n아래 질문에 답해 주세요.",
+                            if (event.remoteAlsoMuted)
+                                "상대방의 발화에서 보이스피싱 위험이 감지되었습니다.\n아래 질문에 답해 주세요."
+                            else
+                                "상대방의 발화에서 보이스피싱이 의심되는 표현이 감지되었습니다.\n확인을 위해 마이크를 차단했습니다. 아래 질문에 답해 주세요.",
                             color = TextLight, fontSize = 14.sp,
                             textAlign = TextAlign.Center, lineHeight = 20.sp
                         )

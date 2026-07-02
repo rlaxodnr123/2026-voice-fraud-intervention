@@ -8,7 +8,6 @@ import android.os.IBinder
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.callguard.domain.interfaces.BlockReason
 import com.example.callguard.domain.interfaces.InterventionEvent
 import com.example.callguard.domain.interfaces.RiskLevel
 import com.example.callguard.domain.interfaces.RiskScore
@@ -188,16 +187,13 @@ class CallViewModel : ViewModel() {
     private fun handleIntervention(event: InterventionEvent) {
         when (event) {
             is InterventionEvent.RemotePhishingDetected -> {
-                // SCAM 확정은 RemotePhishingBlocked가 전담 (양쪽 음성 차단 + 설문) — 여기서는 SUSPICIOUS 경고만 표시
-                if (event.riskScore.level == RiskLevel.SUSPICIOUS) {
-                    _showRemotePhishingWarning.value = true
-                }
+                // SUSPICIOUS/SCAM 모두 RemotePhishingBlocked가 전담 (마이크 차단 + TTS 설명 + 설문) — 여기서는 더 이상 개입하지 않음
             }
             is InterventionEvent.RemotePhishingBlocked -> {
-                // 마이크 + 상대 음성은 서비스에서 이미 차단됨 — UI만 업데이트
+                // 마이크(+ SCAM 확정 시 상대 음성)는 서비스에서 이미 차단됨 — UI만 업데이트
                 _remotePhishingBlockedEvent.value = event
                 _isLocalMuted.value = true
-                _isRemoteMuted.value = true
+                _isRemoteMuted.value = event.remoteAlsoMuted
             }
             is InterventionEvent.LocalLeakBlocked -> {
                 // 마이크는 서비스에서 이미 뮤트됨 — UI만 업데이트
@@ -290,12 +286,12 @@ class CallViewModel : ViewModel() {
     /**
      * 설문 완료 후 결과에 따라:
      *  - 보이스피싱 확정 → 통화 종료
-     *  - 보이스피싱 아님 → 마이크 자동 재개 (REMOTE_PHISHING 원인이었다면 상대 음성도 재개)
+     *  - 보이스피싱 아님 → 마이크 + 상대 음성 모두 자동 재개 (A/B 두 경로 모두 양쪽을 차단했으므로 항상 둘 다 복구)
      */
     fun submitSurveyAndDecide() {
         callService?.stopVoiceSurvey()
         val answers = _surveyAnswers.value
-        val reason = callService?.consumeBlockReason() ?: BlockReason.LOCAL_LEAK
+        callService?.consumeBlockReason()
 
         if (answers.shouldKeepBlocked) {
             // 보이스피싱 확정 → 통화 종료
@@ -304,16 +300,15 @@ class CallViewModel : ViewModel() {
             _surveyAnswers.value = LeakSurveyAnswers()
             endCall()
         } else {
-            // 보이스피싱 아님으로 확인 → 마이크(및 필요 시 상대 음성) 자동 재개
+            // 보이스피싱 아님으로 확인 → 마이크 + 상대 음성 자동 재개
             _localLeakEvent.value = null
             _remotePhishingBlockedEvent.value = null
             _surveyAnswers.value = LeakSurveyAnswers()
             _isLocalMuted.value = false
+            _isRemoteMuted.value = false
             callService?.muteLocalMic(false)
-            if (reason == BlockReason.REMOTE_PHISHING) {
-                _isRemoteMuted.value = false
-                callService?.muteRemoteAudio(false)
-            }
+            callService?.muteRemoteAudio(false)
+            callService?.resumeAfterFalseAlarm()
         }
     }
 
@@ -324,7 +319,10 @@ class CallViewModel : ViewModel() {
         _remotePhishingBlockedEvent.value = null
         _surveyAnswers.value = LeakSurveyAnswers()
         _isLocalMuted.value = false
+        _isRemoteMuted.value = false
         callService?.muteLocalMic(false)
+        callService?.muteRemoteAudio(false)
+        callService?.resumeAfterFalseAlarm()
     }
 
     // ── 시뮬레이션 ───────────────────────────────────────────────

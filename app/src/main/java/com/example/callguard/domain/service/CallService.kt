@@ -179,11 +179,15 @@ class CallService : LifecycleService() {
 
         val localLeakDetector = LocalLeakDetector { triggerPhrase, partialText ->
             if (activeBlockReason != null) return@LocalLeakDetector  // 이미 차단/설문 진행 중이면 중복 트리거 방지
-            Log.w(TAG, "개인정보 누출 감지! '$triggerPhrase' → 즉시 마이크 차단")
+            Log.w(TAG, "개인정보 누출 감지! '$triggerPhrase' → 즉시 양쪽 음성 차단")
             activeBlockReason = BlockReason.LOCAL_LEAK
             webRtcManager.setLocalAudioMuted(true)
+            // 설문 중 상대방(공격자)이 계속 말을 걸어 피해자를 혼란시키지 못하도록 상대 음성도 함께 차단한다.
+            webRtcManager.setRemoteAudioMuted(true)
             // 노인 사용자가 화면을 보지 않더라도 인지하도록 진동 + TTS 알림
-            alertUserWithVibrationAndTts()
+            alertUserWithVibrationAndTts(
+                "주의! 개인정보 유출 위험이 감지되었습니다. 마이크와 상대방 음성이 차단되었습니다. 설문에 답해주세요."
+            )
             lifecycleScope.launch {
                 _interventionEvent.emit(InterventionEvent.LocalLeakBlocked(triggerPhrase, partialText))
             }
@@ -219,16 +223,34 @@ class CallService : LifecycleService() {
         // 상대방 발화가 SCAM으로 확정되면: 내 마이크 + 상대 음성 모두 차단 → 경고 → 음성 설문 시작
         lifecycleScope.launch {
             audioPipeline.riskScoreFlow.collect { risk ->
-                if (risk.level == RiskLevel.SCAM && activeBlockReason == null) {
-                    Log.w(TAG, "상대방 발화 보이스피싱 확정 (키워드: ${risk.matchedKeywords}) → 양쪽 음성 차단")
-                    activeBlockReason = BlockReason.REMOTE_PHISHING
-                    webRtcManager.setLocalAudioMuted(true)
-                    webRtcManager.setRemoteAudioMuted(true)
-                    alertUserWithVibrationAndTts(
-                        "주의! 보이스피싱이 의심되는 통화입니다. 마이크와 상대방 음성이 차단되었습니다. 설문에 답해주세요."
-                    )
-                    _interventionEvent.emit(InterventionEvent.RemotePhishingBlocked(risk))
-                    voiceSurveyController.start()
+                if (activeBlockReason != null) return@collect
+                when (risk.level) {
+                    RiskLevel.SCAM -> {
+                        Log.w(TAG, "상대방 발화 보이스피싱 확정 (키워드: ${risk.matchedKeywords}) → 양쪽 음성 차단")
+                        activeBlockReason = BlockReason.REMOTE_PHISHING
+                        webRtcManager.setLocalAudioMuted(true)
+                        webRtcManager.setRemoteAudioMuted(true)
+                        alertUserWithVibrationAndTts(
+                            "주의! 보이스피싱이 의심되는 통화입니다. 마이크와 상대방 음성이 차단되었습니다. 설문에 답해주세요."
+                        )
+                        _interventionEvent.emit(InterventionEvent.RemotePhishingBlocked(risk, remoteAlsoMuted = true))
+                        voiceSurveyController.start()
+                    }
+                    RiskLevel.SUSPICIOUS -> {
+                        // 아직 SCAM 확정 전 의심 단계지만, 화면을 못 보는 피해자도 즉시 인지하도록
+                        // TTS로 상황을 설명하고, 확인이 끝나기 전까지 양쪽 음성을 선제 차단한다.
+                        Log.w(TAG, "상대방 발화 보이스피싱 의심 (키워드: ${risk.matchedKeywords}) → 양쪽 음성 선제 차단")
+                        activeBlockReason = BlockReason.SUSPECTED_REMOTE
+                        webRtcManager.setLocalAudioMuted(true)
+                        webRtcManager.setRemoteAudioMuted(true)
+                        alertUserWithVibrationAndTts(
+                            "주의하세요! 방금 상대방의 말에서 보이스피싱이 의심되는 표현이 감지되었습니다. " +
+                                "확인을 위해 마이크와 상대방 음성을 잠시 차단합니다. 들리는 질문에 예 또는 아니오로 답해주세요."
+                        )
+                        _interventionEvent.emit(InterventionEvent.RemotePhishingBlocked(risk, remoteAlsoMuted = true))
+                        voiceSurveyController.start()
+                    }
+                    else -> {}
                 }
             }
         }
@@ -369,6 +391,17 @@ class CallService : LifecycleService() {
 
     fun startVoiceSurvey() = voiceSurveyController.start()
     fun stopVoiceSurvey() = voiceSurveyController.stop()
+
+    /**
+     * 설문 결과 보이스피싱이 아니라고 판단되어 통화를 재개할 때 호출.
+     * scamDetector/localLeakDetector에 누적된 키워드를 비우지 않으면 matchedKeywords가
+     * 그대로 남아 있어 재개 직후 들어오는 다음 발화(STT)에서 emitRisk()가 같은 위험도를
+     * 즉시 재발사 → activeBlockReason이 비워진 상태라 바로 재차단+재설문이 시작되는 루프가 생긴다.
+     */
+    fun resumeAfterFalseAlarm() {
+        audioPipeline.scamDetector.reset()
+        audioPipeline.localLeakDetector.reset()
+    }
 
     fun hangUpCall() {
         signalingClient?.sendCallEnd()

@@ -80,7 +80,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // WebRTC Android Library
-    implementation("im.conversations.webrtc:webrtc-android:129.0.0")
+    // addSink(AudioTrackSink) 등 원격 오디오 PCM 캡처 API가 필요해서
+    // sink API가 없는 im.conversations.webrtc 대신 webrtc-sdk 빌드로 교체
+    implementation("io.github.webrtc-sdk:android:144.7559.09")
 
     // Vosk STT Library
     implementation("net.java.dev.jna:jna:5.13.0@aar")

@@ -22,7 +22,9 @@ enum class BlockReason {
     /** 내 발화에서 개인정보 누출 패턴 감지 → 내 마이크만 차단 */
     LOCAL_LEAK,
     /** 상대 발화에서 피싱 위험 SCAM 판정 → 내 마이크 + 상대 음성 모두 차단 */
-    REMOTE_PHISHING
+    REMOTE_PHISHING,
+    /** 상대 발화에서 피싱 의심(SUSPICIOUS) 감지 → 내 마이크만 차단 (상대 음성은 그대로 들림) */
+    SUSPECTED_REMOTE
 }
 
 /**
@@ -36,8 +38,14 @@ sealed class InterventionEvent {
     /** 상대방이 피싱 뉘앙스 발화 (SUSPICIOUS, 경고만) */
     data class RemotePhishingDetected(val riskScore: RiskScore) : InterventionEvent()
 
-    /** 상대방 발화 SCAM 확정 → 양쪽 음성 차단 + 설문 시작 */
-    data class RemotePhishingBlocked(val riskScore: RiskScore) : InterventionEvent()
+    /**
+     * 상대방 발화에서 피싱 위험(SUSPICIOUS 또는 SCAM) 감지 → 마이크 차단 + 설문 시작.
+     * @param remoteAlsoMuted true면 SCAM 확정으로 상대 음성까지 차단됨, false면 SUSPICIOUS 의심 단계라 상대 음성은 그대로 들림
+     */
+    data class RemotePhishingBlocked(
+        val riskScore: RiskScore,
+        val remoteAlsoMuted: Boolean = true
+    ) : InterventionEvent()
 
     /** 사용자 발화에서 개인정보 누출 감지 → 마이크 즉시 차단 */
     data class LocalLeakBlocked(

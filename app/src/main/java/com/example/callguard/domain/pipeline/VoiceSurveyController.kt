@@ -30,7 +30,10 @@ class VoiceSurveyController(
     )
 
     private val yesWords = listOf("예", "네", "맞아요", "맞습니다", "그래요", "응", "yes")
-    private val noWords = listOf("아니오", "아니요", "아니야", "아닙니다", "틀려요", "no")
+    // STT가 "아니요"를 "아니 요"처럼 띄어 인식하거나 "아니"만 잡는 경우까지 포괄하도록
+    // "아니" 계열 어근과 짧은 변형을 폭넓게 등록한다 (긴 단어를 먼저 검사하지 않아도
+    // contains 매칭이라 "아니" 하나만으로도 모든 변형을 커버함).
+    private val noWords = listOf("아니오", "아니요", "아니야", "아닙니다", "아니에요", "안돼요", "아니", "틀려요", "no")
 
     private val _currentQuestionIndex = MutableStateFlow(-1)
     val currentQuestionIndex: StateFlow<Int> = _currentQuestionIndex
@@ -68,7 +71,8 @@ class VoiceSurveyController(
         val idx = _currentQuestionIndex.value
         if (idx !in questions.indices) return
 
-        val lower = text.trim()
+        // Vosk가 종종 음절 사이에 공백을 넣어 인식하므로(예: "아니 요") 공백을 제거하고 매칭한다.
+        val lower = text.trim().replace(" ", "")
         val answer = when {
             noWords.any { lower.contains(it, ignoreCase = true) } -> false
             yesWords.any { lower.contains(it, ignoreCase = true) } -> true
