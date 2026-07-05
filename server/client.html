@@ -31,7 +31,14 @@
 <div id="status" style="background:#333">대기 중</div>
 
 <button id="btnJoin"   onclick="joinRoom()">방 입장 (통화 시작)</button>
-<button id="btnHangup" onclick="hangUp()" disabled>통화 종료</button>
+
+<div style="display:flex; gap:8px;">
+  <button id="btnHangup" onclick="hangUp()" disabled style="flex:1;">통화 종료</button>
+  <button id="btnAttacker" onclick="sendAttackerSpeech()" disabled style="flex:1; background:#ffcc00;">공격자</button>
+</div>
+
+<label>공격자 대사 (텍스트로 입력하면 상대방 기기에서 음성으로 재생됩니다)</label>
+<input id="attackerText" placeholder="예: 검찰청입니다. 계좌가 범죄에 연루되어..." onkeydown="if(event.key==='Enter') sendAttackerSpeech()" />
 
 <div id="log"></div>
 
@@ -176,10 +183,25 @@ async function setupPeerConnection() {
     if (s === 'connected') {
       setStatus('🟢 통화 중', '#1a4a1a');
       $('btnHangup').disabled = false;
+      $('btnAttacker').disabled = false;
     } else if (s === 'failed' || s === 'disconnected') {
       setStatus('🔴 연결 끊김', '#4a0000');
+      $('btnAttacker').disabled = true;
     }
   };
+}
+
+// ── 공격자 대사 전송 (텍스트 → 상대 기기에서 음성으로 재생) ────────
+function sendAttackerSpeech() {
+  const text = $('attackerText').value.trim();
+  if (!text) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log('연결되어 있지 않습니다.', 'err');
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'typed_speech', text }));
+  log(`공격자 대사 전송: "${text}"`, 'warn');
+  $('attackerText').value = '';
 }
 
 // ── Offer 생성 (caller 역할) ──────────────────────────────────────
@@ -201,6 +223,7 @@ function hangUp() {
   role = null;
   $('btnJoin').disabled = false;
   $('btnHangup').disabled = true;
+  $('btnAttacker').disabled = true;
   setStatus('통화 종료', '#333');
   log('통화 종료', 'warn');
 }

@@ -19,3 +19,7 @@ local.properties
 # Node.js server
 server/node_modules/
 server/.env
+server/logs/
+
+# Claude Code local settings (machine-specific, not shared)
+.claude/settings.local.json

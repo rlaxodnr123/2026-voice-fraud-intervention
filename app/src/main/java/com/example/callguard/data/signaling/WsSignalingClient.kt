@@ -83,8 +83,13 @@ class WsSignalingClient(
                         "call_end" -> {
                             _events.tryEmit(SignalingEvent.CallEnded)
                         }
+                        "typed_speech" -> {
+                            _events.tryEmit(SignalingEvent.TypedSpeechReceived(msg.getString("text")))
+                        }
                         "error" -> {
-                            Log.e(TAG, "서버 에러: ${msg.optString("message")}")
+                            val message = msg.optString("message", "서버 오류가 발생했습니다.")
+                            Log.e(TAG, "서버 에러: $message")
+                            _events.tryEmit(SignalingEvent.RoomError(message))
                         }
                     }
                 } catch (e: Exception) {
@@ -124,6 +129,10 @@ class WsSignalingClient(
 
     override fun sendCallEnd() {
         ws?.send(json("type" to "call_end"))
+    }
+
+    override fun sendTypedSpeech(text: String) {
+        ws?.send(json("type" to "typed_speech", "text" to text))
     }
 
     override fun disconnect() {

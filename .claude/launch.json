@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "admin-dashboard",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "server", "-l", "5500", "--no-clipboard"],
+      "port": 5500
+    }
+  ]
+}

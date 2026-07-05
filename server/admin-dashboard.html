@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CallGuard 관리자 모니터링</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0e17; color: #e2e1e6; font-family: -apple-system, sans-serif; font-size: 14px; }
+  h1 { font-size: 20px; font-weight: 800;
+       background: linear-gradient(90deg, #00f2fe, #4facfe);
+       -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .header { display: flex; align-items: center; gap: 16px; padding: 16px 20px;
+            border-bottom: 1px solid #2a2740; flex-wrap: wrap; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0; }
+  .status-dot.connected { background: #34c759; box-shadow: 0 0 6px #34c759; }
+  .status-text { font-size: 12px; color: #9f9ba8; }
+
+  .connect-bar { display: flex; gap: 8px; padding: 12px 20px; background: #1e1b29; }
+  .connect-bar input { flex: 1; background: #0f0e17; border: 1px solid #3a3760;
+                       color: #e2e1e6; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+  .connect-bar input:focus { outline: none; border-color: #00f2fe; }
+  .connect-bar button { background: linear-gradient(90deg, #00f2fe, #4facfe);
+                        color: #000; font-weight: 700; border: none; border-radius: 8px;
+                        padding: 8px 18px; cursor: pointer; font-size: 13px; }
+  .btn-red { background: #ff3b30 !important; color: #fff !important; }
+
+  /* 탭 */
+  .tabs { display: flex; border-bottom: 1px solid #2a2740; background: #1e1b29; }
+  .tab  { padding: 10px 20px; cursor: pointer; font-size: 13px; color: #9f9ba8;
+          border-bottom: 2px solid transparent; transition: all .2s; }
+  .tab.active { color: #00f2fe; border-bottom-color: #00f2fe; }
+
+  .tab-content { display: none; height: calc(100vh - 150px); }
+  .tab-content.active { display: grid; }
+
+  /* ── 실시간 탭 ── */
+  #tab-live { grid-template-columns: 1fr 320px; }
+
+  .panel { padding: 16px 20px; overflow-y: auto; }
+  .panel-title { font-size: 11px; color: #9f9ba8; font-weight: 600; letter-spacing: 0.08em;
+                 text-transform: uppercase; margin-bottom: 12px; }
+
+  .bubble-wrap { display: flex; flex-direction: column; gap: 8px; }
+  .bubble { max-width: 80%; padding: 8px 12px; border-radius: 12px; line-height: 1.5; }
+  .bubble.remote { align-self: flex-start; background: #1e1b29; border: 1px solid #2a2740; }
+  .bubble.local  { align-self: flex-end;   background: rgba(79,172,254,0.12); border: 1px solid rgba(79,172,254,0.3); }
+  .bubble .label { font-size: 9px; font-weight: 700; margin-bottom: 3px; }
+  .bubble.remote .label { color: #00f2fe; }
+  .bubble.local  .label { color: #4facfe; }
+  .bubble .text  { font-size: 13px; }
+  .bubble.partial .text { color: #9f9ba8; font-style: italic; }
+  .bubble .ts    { font-size: 9px; color: #555; margin-top: 3px; }
+
+  .sidebar { border-left: 1px solid #2a2740; display: flex; flex-direction: column; }
+  .risk-panel { padding: 16px; border-bottom: 1px solid #2a2740; }
+  .risk-bar-wrap { height: 10px; background: #1e1b29; border-radius: 5px; overflow: hidden; margin: 10px 0; }
+  .risk-bar { height: 100%; border-radius: 5px; transition: width 0.4s ease, background 0.4s ease; width: 5%; background: #34c759; }
+  .risk-level { font-size: 18px; font-weight: 800; }
+  .risk-level.SAFE       { color: #34c759; }
+  .risk-level.SUSPICIOUS { color: #ffcc00; }
+  .risk-level.SCAM       { color: #ff3b30; }
+  .risk-pct { font-size: 12px; color: #9f9ba8; }
+  .keywords-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .kw-badge { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; }
+  .kw-badge.SAFE       { background: rgba(52,199,89,0.15);  color: #34c759; }
+  .kw-badge.SUSPICIOUS { background: rgba(255,204,0,0.15);  color: #ffcc00; }
+  .kw-badge.SCAM       { background: rgba(255,59,48,0.15);  color: #ff3b30; }
+
+  .events-panel { padding: 16px; flex: 1; overflow-y: auto; }
+  .event-item { padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;
+                border-left: 3px solid transparent; font-size: 12px; }
+  .event-item.intervention { border-color: #ff3b30; background: rgba(255,59,48,0.08); }
+  .event-item.risk_update  { border-color: #ffcc00; background: rgba(255,204,0,0.06); }
+  .event-item.stt_final    { border-color: #4facfe; background: rgba(79,172,254,0.06); }
+  .event-item .ev-time { font-size: 10px; color: #555; }
+  .event-item .ev-body { margin-top: 2px; color: #c0bfc8; }
+  .event-item .ev-body strong { color: #e2e1e6; }
+
+  .clear-btn { margin: 0 16px 12px; background: #2a2740; border: none; color: #9f9ba8;
+               padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px;
+               width: calc(100% - 32px); }
+  .clear-btn:hover { background: #3a3760; }
+
+  /* ── 로그 탭 ── */
+  #tab-log { grid-template-columns: 1fr; padding: 20px; overflow-y: auto; gap: 16px;
+             display: none; flex-direction: column; }
+  #tab-log.active { display: flex; }
+
+  .log-section { background: #1e1b29; border-radius: 12px; padding: 16px; }
+  .log-section h3 { font-size: 13px; font-weight: 700; margin-bottom: 12px;
+                    color: #9f9ba8; letter-spacing: 0.06em; text-transform: uppercase; }
+
+  .log-row { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px;
+             padding: 8px 0; border-bottom: 1px solid #2a2740; font-size: 13px; }
+  .log-row:last-child { border-bottom: none; }
+  .log-label { color: #9f9ba8; font-size: 12px; }
+  .log-value { color: #e2e1e6; word-break: break-all; }
+
+  .timeline { display: flex; flex-direction: column; gap: 8px; }
+  .tl-item  { display: flex; gap: 12px; align-items: flex-start; }
+  .tl-dot   { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+  .tl-dot.detection  { background: #ff3b30; }
+  .tl-dot.survey     { background: #4facfe; }
+  .tl-dot.action     { background: #ffcc00; }
+  .tl-dot.end        { background: #34c759; }
+  .tl-body  { flex: 1; }
+  .tl-time  { font-size: 10px; color: #555; }
+  .tl-desc  { font-size: 13px; color: #c0bfc8; margin-top: 2px; }
+  .tl-desc strong { color: #e2e1e6; }
+
+  .badge-yes { color: #ff3b30; font-weight: 700; }
+  .badge-no  { color: #34c759; font-weight: 700; }
+  .badge-end-phishing { background: rgba(255,59,48,0.15); color: #ff3b30;
+                        padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+  .badge-end-false    { background: rgba(52,199,89,0.15);  color: #34c759;
+                        padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+  .badge-end-user     { background: rgba(159,155,168,0.15); color: #9f9ba8;
+                        padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+
+  .empty-log { color: #555; font-size: 13px; text-align: center; padding: 40px; }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #3a3760; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>CallGuard 관리자 모니터</h1>
+  <div class="status-dot" id="statusDot"></div>
+  <span class="status-text" id="statusText">연결 안 됨</span>
+</div>
+
+<div class="connect-bar">
+  <input id="serverIp" type="text" placeholder="서버 IP (예: 192.168.0.10)" value="localhost">
+  <input id="roomId"   type="text" placeholder="방 코드 (예: room-1234)" value="room-1234">
+  <button onclick="connectWs()">연결</button>
+  <button class="btn-red" onclick="disconnectWs()">해제</button>
+</div>
+
+<!-- 탭 -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('live')">📡 실시간 모니터</div>
+  <div class="tab"        onclick="switchTab('log')">📋 세션 로그</div>
+</div>
+
+<!-- 실시간 탭 -->
+<div class="tab-content active" id="tab-live">
+  <div class="panel" id="sttPanel">
+    <div class="panel-title">실시간 STT 스트림</div>
+    <div class="bubble-wrap" id="bubbleWrap"></div>
+  </div>
+
+  <div class="sidebar">
+    <div class="risk-panel">
+      <div class="panel-title">피싱 위험도</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span class="risk-level SAFE" id="riskLevel">SAFE</span>
+        <span class="risk-pct" id="riskPct">5%</span>
+      </div>
+      <div class="risk-bar-wrap"><div class="risk-bar" id="riskBar"></div></div>
+      <div class="keywords-wrap" id="keywordsWrap"></div>
+    </div>
+
+    <div class="events-panel">
+      <div class="panel-title">이벤트 로그</div>
+      <button class="clear-btn" onclick="clearEvents()">로그 지우기</button>
+      <div id="eventsWrap"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 세션 로그 탭 -->
+<div class="tab-content" id="tab-log">
+  <div id="logContent"><p class="empty-log">통화 세션이 시작되면 로그가 표시됩니다.</p></div>
+</div>
+
+<script>
+let ws = null;
+const partialBubbles = {};
+
+// ── 탭 전환 ──────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.classList.toggle('active', ['live','log'][i] === name);
+  });
+  document.querySelectorAll('.tab-content').forEach((c, i) => {
+    c.classList.toggle('active', ['tab-live','tab-log'][i] === `tab-${name}`);
+  });
+}
+
+// ── WebSocket ────────────────────────────────────────────────────
+function connectWs() {
+  const ip   = document.getElementById('serverIp').value.trim();
+  const room = document.getElementById('roomId').value.trim();
+  if (!ip || !room) return alert('서버 IP와 방 코드를 입력하세요.');
+  if (ws) ws.close();
+
+  const url = ip.startsWith('ws') ? ip.replace(/:8080/, ':8081') : `ws://${ip}:8081`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setStatus(true, `연결됨: ${url}`);
+    ws.send(JSON.stringify({ type: 'admin_join', room }));
+    addEvent('system', `방 [${room}] 모니터링 시작`);
+  };
+  ws.onmessage = (e) => { try { handleMessage(JSON.parse(e.data)); } catch {} };
+  ws.onclose   = () => setStatus(false, '연결 끊김');
+  ws.onerror   = () => setStatus(false, '연결 오류');
+}
+
+function disconnectWs() { ws?.close(); ws = null; }
+
+// ── 메시지 처리 ──────────────────────────────────────────────────
+function handleMessage(msg) {
+  const d = msg.data || {};
+  switch (msg.type) {
+    case 'stt_final':
+      addBubble(d.speaker, d.text, false);
+      addEvent('stt_final', `[${d.speaker}] ${d.text}`);
+      break;
+    case 'stt_partial':
+      updatePartialBubble(d.speaker, d.text);
+      break;
+    case 'risk_update':
+      updateRisk(d.level, parseFloat(d.probability), parseJsonArr(d.keywords));
+      break;
+    case 'intervention':
+      addEvent('intervention', `🚨 <strong>${d.level}</strong> 차단 — 키워드: ${parseJsonArr(d.keywords).join(', ')}`);
+      flashScreen();
+      break;
+    case 'session_log':
+      renderSessionLog(msg.data);
+      break;
+  }
+}
+
+// ── STT 말풍선 ───────────────────────────────────────────────────
+function addBubble(speaker, text, isPartial) {
+  const wrap    = document.getElementById('bubbleWrap');
+  const isLocal = speaker === 'LOCAL';
+
+  if (partialBubbles[speaker]) {
+    partialBubbles[speaker].querySelector('.text').textContent = text;
+    partialBubbles[speaker].classList.remove('partial');
+    partialBubbles[speaker].querySelector('.ts').textContent = nowStr();
+    delete partialBubbles[speaker];
+    scrollBottom('sttPanel');
+    return;
+  }
+
+  const el = document.createElement('div');
+  el.className = `bubble ${isLocal ? 'local' : 'remote'}${isPartial ? ' partial' : ''}`;
+  el.innerHTML = `
+    <div class="label">${isLocal ? '나 (송신)' : '상대방 (수신)'}</div>
+    <div class="text">${esc(text)}${isPartial ? '...' : ''}</div>
+    <div class="ts">${nowStr()}</div>`;
+  wrap.appendChild(el);
+  if (isPartial) partialBubbles[speaker] = el;
+  scrollBottom('sttPanel');
+}
+
+function updatePartialBubble(speaker, text) {
+  if (partialBubbles[speaker]) {
+    partialBubbles[speaker].querySelector('.text').textContent = text + '...';
+  } else {
+    addBubble(speaker, text, true);
+  }
+}
+
+// ── 리스크 게이지 ─────────────────────────────────────────────────
+let allKeywords = new Set();
+
+function updateRisk(level, prob, keywords) {
+  document.getElementById('riskLevel').textContent = level;
+  document.getElementById('riskLevel').className   = `risk-level ${level}`;
+  document.getElementById('riskPct').textContent   = `${Math.round(prob * 100)}%`;
+
+  const bar = document.getElementById('riskBar');
+  bar.style.width      = `${Math.round(prob * 100)}%`;
+  bar.style.background = level === 'SCAM' ? '#ff3b30' : level === 'SUSPICIOUS' ? '#ffcc00' : '#34c759';
+
+  keywords.forEach(k => allKeywords.add(k));
+  document.getElementById('keywordsWrap').innerHTML =
+    [...allKeywords].map(k => `<span class="kw-badge ${level}">${esc(k)}</span>`).join('');
+}
+
+// ── 이벤트 로그 ──────────────────────────────────────────────────
+function addEvent(type, body) {
+  const wrap = document.getElementById('eventsWrap');
+  const el   = document.createElement('div');
+  el.className = `event-item ${type}`;
+  el.innerHTML = `<div class="ev-time">${nowStr()}</div><div class="ev-body">${body}</div>`;
+  wrap.prepend(el);
+}
+
+function clearEvents() {
+  document.getElementById('eventsWrap').innerHTML = '';
+  allKeywords.clear();
+  document.getElementById('keywordsWrap').innerHTML = '';
+}
+
+// ── 세션 로그 렌더링 ─────────────────────────────────────────────
+function renderSessionLog(log) {
+  if (!log) return;
+
+  const endReasonLabel = {
+    'LOCAL_LEAK':      '개인정보 누출 감지 후 종료',
+    'REMOTE_PHISHING': '보이스피싱 확정 종료',
+    'SUSPECTED_REMOTE':'의심 감지 후 종료',
+    'user_ended':      '사용자 직접 종료',
+    'unknown':         '알 수 없음'
+  };
+
+  const endBadge = (r) => {
+    if (!r) return '';
+    if (r.includes('PHISHING') || r.includes('LEAK')) return `<span class="badge-end-phishing">${endReasonLabel[r]||r}</span>`;
+    if (r === 'user_ended') return `<span class="badge-end-user">${endReasonLabel[r]||r}</span>`;
+    return `<span class="badge-end-false">${endReasonLabel[r]||r}</span>`;
+  };
+
+  // ── 기본 정보 ──
+  let html = `
+  <div class="log-section">
+    <h3>통화 기본 정보</h3>
+    <div class="log-row"><span class="log-label">방 코드</span><span class="log-value">${esc(log.room||'-')}</span></div>
+    <div class="log-row"><span class="log-label">통화 시작</span><span class="log-value">${fmtTime(log.callStarted)}</span></div>
+    <div class="log-row"><span class="log-label">통화 종료</span><span class="log-value">${fmtTime(log.callEnded)}</span></div>
+    <div class="log-row"><span class="log-label">종료 사유</span><span class="log-value">${endBadge(log.callEndReason)||'-'}</span></div>
+    <div class="log-row"><span class="log-label">탐지 건수</span><span class="log-value">${(log.detections||[]).length}건</span></div>
+  </div>`;
+
+  // ── 타임라인 ──
+  const items = [];
+
+  (log.detections||[]).forEach(d => {
+    const kws = (d.keywords||[]).join(', ');
+    items.push({ time: d.time, dot: 'detection',
+      desc: `🚨 <strong>${esc(d.type)}</strong> 탐지 — 키워드: ${esc(kws)}` });
+  });
+
+  (log.surveyAnswers||[]).forEach(a => {
+    const ans = a.answer
+      ? '<span class="badge-yes">예</span>'
+      : '<span class="badge-no">아니오</span>';
+    items.push({ time: a.time, dot: 'survey',
+      desc: `💬 "${esc(a.question)}" → ${ans}` });
+  });
+
+  (log.userActions||[]).forEach(u => {
+    items.push({ time: u.time, dot: 'action',
+      desc: `👆 <strong>${esc(u.action)}</strong>` });
+  });
+
+  if (log.callEnded) {
+    items.push({ time: log.callEnded, dot: 'end', desc: `📵 통화 종료 ${endBadge(log.callEndReason)}` });
+  }
+
+  items.sort((a,b) => (a.time||'').localeCompare(b.time||''));
+
+  if (items.length > 0) {
+    html += `<div class="log-section"><h3>세션 타임라인</h3><div class="timeline">`;
+    items.forEach(it => {
+      html += `<div class="tl-item">
+        <div class="tl-dot ${it.dot}"></div>
+        <div class="tl-body">
+          <div class="tl-time">${fmtTime(it.time)}</div>
+          <div class="tl-desc">${it.desc}</div>
+        </div>
+      </div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  // ── 탐지 상세 ──
+  if ((log.detections||[]).length > 0) {
+    html += `<div class="log-section"><h3>탐지 상세</h3>`;
+    log.detections.forEach((d, i) => {
+      html += `
+      <div class="log-row"><span class="log-label">탐지 #${i+1} 시각</span><span class="log-value">${fmtTime(d.time)}</span></div>
+      <div class="log-row"><span class="log-label">탐지 유형</span><span class="log-value">${esc(d.type)}</span></div>
+      <div class="log-row"><span class="log-label">탐지 키워드</span><span class="log-value">${(d.keywords||[]).map(k=>`<span class="kw-badge SCAM">${esc(k)}</span>`).join(' ')}</span></div>
+      <div class="log-row"><span class="log-label">경고 발생 시점</span><span class="log-value">${fmtTime(d.alertTime)}</span></div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ── 설문 응답 ──
+  if ((log.surveyAnswers||[]).length > 0) {
+    html += `<div class="log-section"><h3>설문 응답 (사용자가 누른 버튼)</h3>`;
+    log.surveyAnswers.forEach((a, i) => {
+      const ans = a.answer
+        ? '<span class="badge-yes">예</span>'
+        : '<span class="badge-no">아니오</span>';
+      html += `
+      <div class="log-row"><span class="log-label">Q${i+1}. ${esc(a.question)}</span><span class="log-value">${ans} <span style="color:#555;font-size:11px">${fmtTime(a.time)}</span></span></div>`;
+    });
+    html += `</div>`;
+  }
+
+  document.getElementById('logContent').innerHTML = html || '<p class="empty-log">로그 데이터 없음</p>';
+}
+
+// ── 유틸 ─────────────────────────────────────────────────────────
+function setStatus(ok, msg) {
+  document.getElementById('statusDot').className  = `status-dot${ok ? ' connected' : ''}`;
+  document.getElementById('statusText').textContent = msg;
+}
+function scrollBottom(id) { const el=document.getElementById(id); el.scrollTop=el.scrollHeight; }
+function nowStr()  { return new Date().toLocaleTimeString('ko-KR', {hour12:false}); }
+function fmtTime(iso) {
+  if (!iso) return '-';
+  try { return new Date(iso).toLocaleString('ko-KR', {hour12:false}); } catch { return iso; }
+}
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function parseJsonArr(v) {
+  if (Array.isArray(v)) return v;
+  try { return JSON.parse(v||'[]'); } catch { return []; }
+}
+function flashScreen() {
+  document.body.style.outline = '4px solid #ff3b30';
+  setTimeout(() => document.body.style.outline = '', 1000);
+}
+</script>
+</body>
+</html>

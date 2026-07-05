@@ -27,6 +27,9 @@ class WebRtcManager(
     private var peerConnection: PeerConnection? = null
     private var localAudioTrack: AudioTrack? = null
     private var localAudioSource: AudioSource? = null
+    // 로컬 트랙을 실어 보내는 RtpSender. 뮤트 시 이 sender에서 트랙을 분리해
+    // 실제 송신 오디오를 확실히 끊는다 (아래 setLocalAudioMuted 주석 참고).
+    private var localAudioSender: RtpSender? = null
 
     // 실제 P2P 통화에서 수신한 상대방 AudioTrack (뮤트 제어 + STT용 PCM 캡처)
     private var remoteAudioTrack: AudioTrack? = null
@@ -158,9 +161,9 @@ class WebRtcManager(
             }
         }) ?: return
 
-        // 로컬 트랙 추가
+        // 로컬 트랙 추가 (RtpSender를 저장해 뮤트 시 트랙을 분리할 수 있게 한다)
         localAudioTrack?.let {
-            peerConnection?.addTrack(it, listOf("callguard_stream"))
+            localAudioSender = peerConnection?.addTrack(it, listOf("callguard_stream"))
         }
 
         Log.d(tag, "PeerConnection 생성 완료")
@@ -246,12 +249,15 @@ class WebRtcManager(
 
     fun setLocalAudioMuted(mute: Boolean) {
         isLocalMuted = mute
-        // setEnabled(false) 대신 setVolume(0.0)을 쓴다.
-        // setEnabled(false)는 트랙 자체를 비활성화해 실제 기기에서 캡처(AudioRecord)까지 같이 멈출 수 있어서,
-        // 차단 중에도 계속 필요한 로컬 STT(음성 설문 응답 인식)가 끊기는 문제가 있었다.
-        // setVolume(0.0)은 상대방에게 전달되는 오디오만 무음 처리하고 캡처/SamplesReadyCallback은 그대로 유지한다.
-        localAudioTrack?.setVolume(if (mute) 0.0 else 1.0)
-        Log.d(tag, "로컬 마이크 뮤트(상대방 전달 음소거): $mute")
+        // AudioTrack.setVolume()은 쓰지 않는다 — WebRTC 네이티브 구현상 로컬(송신) 트랙의 볼륨은
+        // 재생(수신) 트랙과 달리 실제로 인코딩·전송되는 RTP 오디오에 반영된다는 보장이 없다
+        // (버전/플랫폼에 따라 송신 스트림은 그대로 나가는 경우가 보고되어 있음 — 이 앱의 핵심 안전
+        // 기능이 여기 달려 있으므로 신뢰할 수 없는 API에 의존하지 않는다).
+        // 대신 RtpSender에서 트랙 자체를 분리(setTrack(null))해 송신을 확실히 끊는다.
+        // localAudioTrack(캡처)과 그 위의 AudioRecord/samplesReadyCallback은 건드리지 않으므로
+        // 차단 중에도 로컬 STT(음성 설문 응답 인식)는 그대로 동작한다.
+        localAudioSender?.setTrack(if (mute) null else localAudioTrack, false)
+        Log.d(tag, "로컬 마이크 뮤트(RtpSender 트랙 분리, 상대방 전달 차단): $mute")
     }
 
     fun setRemoteAudioMuted(mute: Boolean) {
@@ -272,6 +278,7 @@ class WebRtcManager(
         peerConnection = null
         localAudioTrack = null
         localAudioSource = null
+        localAudioSender = null
         remoteAudioTrack = null
         isLocalMuted = false
         isRemoteMuted = false
@@ -321,7 +328,7 @@ class WebRtcManager(
         })
 
         // 로컬 트랙을 caller PC 에 추가
-        localAudioTrack?.let { peerConnection?.addTrack(it, listOf("loopback_stream")) }
+        localAudioTrack?.let { localAudioSender = peerConnection?.addTrack(it, listOf("loopback_stream")) }
 
         // 2. Callee PeerConnection (원격 오디오 수신 역할)
         loopbackRemotePc = f.createPeerConnection(rtcConfig, object : PeerConnectionObserverAdapter() {

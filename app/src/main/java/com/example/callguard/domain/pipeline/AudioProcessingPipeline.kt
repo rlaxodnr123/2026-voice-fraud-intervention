@@ -5,6 +5,7 @@ import com.example.callguard.domain.interfaces.RiskLevel
 import com.example.callguard.domain.interfaces.RiskScore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -23,7 +24,8 @@ class AudioProcessingPipeline(
     val remoteSpeechRecognizer: MockSpeechRecognizer,
     val scamDetector: MockScamDetector,
     val interventionEngine: MockInterventionEngine,
-    val localLeakDetector: LocalLeakDetector
+    val localLeakDetector: LocalLeakDetector,
+    val sensitiveDisclosureDetector: SensitiveDisclosureDetector
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)
 
@@ -45,19 +47,21 @@ class AudioProcessingPipeline(
     init {
         // ── 경로 A: 원격 발화 분석 ─────────────────────────────────
 
-        // 원격 Final STT → 피싱 감지
+        // 원격 Final STT → 피싱 감지 + 민감정보 요구 패턴 감지
         scope.launch {
             remoteSpeechRecognizer.transcript.collect { text ->
                 _transcriptFlow.emit("REMOTE" to text)
                 scamDetector.analyzeText(text)
+                sensitiveDisclosureDetector.analyzeRemoteText(text)
             }
         }
 
-        // 원격 Partial STT → 피싱 감지 (실시간)
+        // 원격 Partial STT → 피싱 감지 + 민감정보 요구 패턴 감지 (실시간)
         scope.launch {
             remoteSpeechRecognizer.partialTranscript.collect { text ->
                 _partialTranscriptFlow.emit("REMOTE" to text)
                 scamDetector.analyzeText(text)
+                sensitiveDisclosureDetector.analyzeRemoteText(text)
             }
         }
 
@@ -80,6 +84,7 @@ class AudioProcessingPipeline(
                 _transcriptFlow.emit("LOCAL" to text)
                 localLeakDetector.analyze(text)   // 개인정보 누출 차단
                 scamDetector.analyzeText(text)    // 피싱 키워드 위험도 계산
+                sensitiveDisclosureDetector.analyzeLocalText(text)  // 요구 직후 숫자 발화 감지
             }
         }
 
@@ -89,6 +94,7 @@ class AudioProcessingPipeline(
                 _partialTranscriptFlow.emit("LOCAL" to text)
                 localLeakDetector.analyze(text)   // 개인정보 즉시 차단
                 scamDetector.analyzeText(text)    // 피싱 맥락 실시간 분석
+                sensitiveDisclosureDetector.analyzeLocalText(text)  // 요구 직후 숫자 발화 감지
             }
         }
     }
@@ -113,6 +119,14 @@ class AudioProcessingPipeline(
         remoteSpeechRecognizer.reset()
         scamDetector.reset()
         localLeakDetector.reset()
+        sensitiveDisclosureDetector.reset()
         interventionEngine.reset()
+    }
+
+    /** 서비스 완전 종료(onDestroy) 시 호출 — 내부 코루틴과 STT 자원을 해제한다. */
+    fun release() {
+        scope.cancel()
+        localSpeechRecognizer.release()
+        remoteSpeechRecognizer.release()
     }
 }
