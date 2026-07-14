@@ -7,6 +7,41 @@
 
 ---
 
+## 0. 팀원 온보딩 — 깃 받은 후 이대로만 따라 하세요
+
+이 코드는 저장소 `2026-voice-fraud-intervention` 의 **`callguard-pilot` 브랜치**에 있습니다.
+(다른 브랜치인 `main`/`test_callguard` 는 실서비스 앱이라 내용이 완전히 다릅니다. 반드시 `callguard-pilot` 을 받으세요.)
+
+**① 브랜치만 받기** (실험 프로젝트만 별도 폴더로)
+```powershell
+git clone -b callguard-pilot https://github.com/rlaxodnr123/2026-voice-fraud-intervention.git callguard-experiment
+cd callguard-experiment
+```
+> 이미 저장소를 받았다면: `git fetch origin` → `git checkout callguard-pilot`
+
+**② Vosk 음성모델 넣기 (필수 — 깃에 없음)**
+용량이 커서 깃에 포함하지 않았습니다. **[3-4. Vosk 음성모델 설치](#3-4--vosk-음성모델-설치-필수--없으면-빌드음성인식-불가)** 대로 `app/src/main/assets/model-ko/` 에 모델을 넣으세요. **이걸 빼먹으면 앱이 빌드/동작하지 않습니다.**
+
+**③ 서버 의존성 설치**
+```powershell
+cd server
+npm install
+cd ..
+```
+
+**④ Android SDK 경로**
+Android Studio로 `callguard-experiment` 폴더를 한 번 열면 `local.properties` 가 자동 생성됩니다. (깃에 없는 게 정상 — 각자 PC 경로라 제외했습니다.)
+
+**⑤ 잘 받아졌는지 30초 확인** (기기 없이 코드 로직만)
+```powershell
+.\gradlew :app:testDebugUnitTest
+```
+→ 테스트가 전부 통과하면 코드가 정상입니다. 이후 실제 실행은 아래 **4. 실행 순서** 를 따르세요.
+
+> 요약: **브랜치 받기 → 모델 넣기 → npm install → (Android Studio 한 번 열기) → 테스트로 확인**. 깃에 일부러 넣지 않은 것 = **모델 · local.properties · 빌드산출물 · 세션 로그(개인정보)**.
+
+---
+
 ## 1. 전체 그림 — 4개 구성 요소
 
 실험은 아래 4개가 **같은 서버 · 같은 방 코드**로 연결되어 돌아갑니다.
