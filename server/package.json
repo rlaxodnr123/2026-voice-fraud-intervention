@@ -1,0 +1,12 @@
+{
+  "name": "callguard-signaling-server",
+  "version": "1.0.0",
+  "description": "WebRTC Signaling Server for CallGuard",
+  "main": "signaling-server.js",
+  "scripts": {
+    "start": "node signaling-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

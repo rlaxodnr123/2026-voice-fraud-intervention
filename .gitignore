@@ -1,0 +1,29 @@
+# ── Android / Gradle ──────────────────────────────
+*.iml
+.gradle/
+build/
+/app/build/
+.cxx/
+captures/
+
+# 각자 PC의 SDK 경로 — 커밋 금지
+local.properties
+
+# ── Vosk 음성모델 (253MB, HCLr.fst 174MB > GitHub 100MB 한도) ──
+# 깃에 올리지 않고 각자 내려받는다. 설치법은 README "Vosk 모델 설치" 참고.
+/app/src/main/assets/model-ko/
+
+# ── Android Studio / IntelliJ ─────────────────────
+.idea/
+*.hprof
+
+# ── Node (server) ─────────────────────────────────
+server/node_modules/
+npm-debug.log*
+
+# ── 실험 세션 로그 (실행 중 생성물, 개인정보 가능성) ──
+server/logs/
+
+# ── OS ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
