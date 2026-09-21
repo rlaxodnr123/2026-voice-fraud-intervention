@@ -1,0 +1,22 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+local.properties
+
+# 실험 산출물 — 개인정보이므로 절대 커밋하지 않는다
+/sessions/
+*.wav
+
+# 용량이 커서 깃에 넣지 않는다 (README 2-2 참고)
+/app/src/main/assets/model-ko/*
+!/app/src/main/assets/model-ko/.gitkeep
+
+# 공격자 녹음본도 저장소에 넣지 않는다 (연구자가 직접 녹음해 배치)
+/app/src/main/assets/attacker/*
+!/app/src/main/assets/attacker/README.txt
