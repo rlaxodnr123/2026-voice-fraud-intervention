@@ -16,18 +16,20 @@ class AttackerScriptCatalogTest {
     }
 
     @Test
-    fun `2x2 네 칸이 정확히 하나씩 채워져 있다`() {
-        // [진짜사기·지인] [애매·지인] [진짜사기·모름] [애매·모름]
-        val cells = AttackerScriptCatalog.scripts.map { it.scamLevel to it.relationship }
-        assertEquals(4, cells.size)
-        assertEquals(4, cells.toSet().size)
-        ScamLevel.values().forEach { level ->
-            CallerRelationship.values().forEach { rel ->
-                assertTrue(
-                    level.label + "×" + rel.label + " 셀이 비었습니다",
-                    cells.contains(level to rel)
-                )
-            }
+    fun `지인과 모르는 사람 대본이 정확히 하나씩 있다`() {
+        val rels = AttackerScriptCatalog.scripts.map { it.relationship }
+        assertEquals(2, rels.size)
+        CallerRelationship.values().forEach { rel ->
+            assertEquals(rel.label + " 대본 개수", 1, rels.count { it == rel })
+        }
+    }
+
+    @Test
+    fun `두 시나리오 모두 진짜 사기다`() {
+        // 애매한 상황 조건이 빠졌으므로 개입은 항상 옳은 판단이 된다.
+        // 과잉 개입 비용을 다시 재려면 AMBIGUOUS 대본을 추가해야 한다는 뜻이다.
+        AttackerScriptCatalog.scripts.forEach { script ->
+            assertEquals(script.id, ScamLevel.REAL_SCAM, script.scamLevel)
         }
     }
 
@@ -52,7 +54,7 @@ class AttackerScriptCatalogTest {
         AttackerScriptCatalog.scripts.forEach { script ->
             assertTrue(
                 script.id + ": 개입 지점 앞 도입 대사가 부족합니다",
-                script.interventionPointIndex >= 4
+                script.interventionPointIndex >= 3
             )
         }
     }
@@ -79,16 +81,15 @@ class AttackerScriptCatalogTest {
     }
 
     @Test
-    fun `애매한 시나리오는 핵심 특징에 압박이 없음을 명시한다`() {
-        // 애매 조건이 사실상 사기처럼 들리면 2x2가 무너진다.
-        // 대본이 바뀔 때 이 성질이 유지되는지 확인한다.
-        val ambiguous = AttackerScriptCatalog.scripts.filter { it.scamLevel == ScamLevel.AMBIGUOUS }
-        assertEquals(2, ambiguous.size)
-        ambiguous.forEach { script ->
-            val factors = script.keyFactors.joinToString()
+    fun `모든 시나리오가 개입 안내에 넣을 상황 구절을 가진다`() {
+        // 이 구절이 비면 안내가 "지금 통화 상황이…"로 뭉뚱그려져
+        // 참가자가 무엇을 근거로 판단할지 알 수 없게 된다
+        AttackerScriptCatalog.scripts.forEach { script ->
+            assertTrue(script.id + ": 상황 구절 없음", script.riskPhrase.isNotBlank())
+            // 관형형으로 끝나 "상황이 보이스피싱으로…"에 자연스럽게 이어져야 한다
             assertTrue(
-                script.id + ": 압박·요구 없음을 핵심 특징에 명시해야 합니다",
-                factors.contains("없음")
+                script.id + ": 구절이 '~하는' 형태가 아닙니다: " + script.riskPhrase,
+                script.riskPhrase.endsWith("하는")
             )
         }
     }

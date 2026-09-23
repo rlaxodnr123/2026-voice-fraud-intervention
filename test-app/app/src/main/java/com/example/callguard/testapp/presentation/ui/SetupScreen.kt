@@ -81,7 +81,7 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "참가자 1명이 시나리오 4종을 한 번씩 겪되 순서는 참가자마다 다르게 배정합니다. " +
+                "시나리오 2종 × 개입 2종 = 4가지 조합입니다. 순서는 참가자마다 다르게 배정하고, " +
                     "첫 노출과 반복 노출의 차이가 핵심 대비이므로 순번을 반드시 맞춰 주세요.",
                 color = CallSubText, fontSize = 11.sp
             )
@@ -102,7 +102,7 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
 
         Spacer(Modifier.height(14.dp))
 
-        SectionCard("③ 시나리오 (사기 의심 정도 × 발신자 관계)") {
+        SectionCard("③ 시나리오 (발신자 관계)") {
             viewModel.scriptOptions.forEach { script ->
                 ScenarioRow(
                     scamLevel = script.scamLevel,
@@ -116,9 +116,9 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "애매한 시나리오(2·4)는 의도된 오탐 조건입니다 — 개입이 정상 통화를 " +
-                    "얼마나 방해하는지를 재는 것이 목적이므로, 개입이 걸려도 '실패'가 아닙니다.",
-                color = WarnAmber, fontSize = 11.sp
+                "두 시나리오 모두 진짜 사기입니다. 달라지는 것은 발신자가 " +
+                    "저장된 지인으로 보이는지 여부 하나뿐입니다.",
+                color = CallSubText, fontSize = 11.sp
             )
         }
 
@@ -158,7 +158,7 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
             if (mode == PlaybackMode.LIVE) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "라이브 모드에서는 연구자가 패널(우상단 5회 탭)을 열어 대본을 보며 읽고, " +
+                    "라이브 모드에서는 연구자가 패널(우상단 ⚙ 버튼)을 열어 대본을 보며 읽고, " +
                         "줄마다 [다음 대사]를 눌러야 개입 지점에서 개입이 발동합니다.\n" +
                         "⚠ 사람이 버튼을 누르는 지연이 반응시간에 섞이므로, 자동 재생 세션과 " +
                         "반응시간을 직접 비교하지 마세요 (로그의 triggerLatencyControlled=false).",

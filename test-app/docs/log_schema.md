@@ -29,9 +29,9 @@
 | `trialOrder` | 이 참가자의 몇 번째 통화인가 (1~4) |
 | `interventionId` | `POPUP_TTS` / `FORCE_TERMINATE` / `NONE` |
 | `interventionLabel` | 조건 표시 이름 |
-| `scriptId`, `scriptLabel` | 시나리오 (`S1`~`S4`) |
-| `scamLevel` | `REAL_SCAM` / `AMBIGUOUS` — 2×2의 한 축 |
-| `relationship` | `ACQUAINTANCE` / `STRANGER` — 2×2의 다른 축 |
+| `scriptId`, `scriptLabel` | 시나리오 (`S1` 지인 / `S2` 모르는 사람) |
+| `scamLevel` | `REAL_SCAM` (현재 두 시나리오 모두). 애매한 상황 대본을 추가하면 `AMBIGUOUS`가 생긴다 |
+| `relationship` | `ACQUAINTANCE` / `STRANGER` — 현재 유일한 시나리오 축 |
 | `callerDisplayed` | 통화 화면에 실제로 띄운 발신자 (지인은 이름, 모르는 사람은 번호) |
 | `playbackMode` | `AUTO_TTS` / `RECORDING` / `LIVE` |
 | `startedAt`, `startedAtText` | 세션 시작 시각 |
@@ -71,7 +71,7 @@
   `participant_speech_manual`(연구자 타이핑 — 참가자가 말한 시각이 아님).
 - 버튼만 누르고 말없이 끝낸 참가자가 무응답으로 기록되지 않도록 네 가지를 모두 봅니다.
 
-### 유출 (진짜 사기 조건의 주 지표)
+### 유출 (주 지표)
 
 | 필드 | 의미 |
 |---|---|
@@ -82,15 +82,15 @@
 | `pointToLeakMs` | 개입 지점 → 유출까지 걸린 시간 |
 | `refusalDetected`, `refusalAt` | 거부 표현 감지 여부·시각 |
 
-### 개입에 대한 선택 (애매 조건의 주 지표)
+### 개입에 대한 선택
 
 | 필드 | 의미 |
 |---|---|
 | `choseContinue` | 팝업에서 [통화 계속하기]를 골랐는가 |
 | `choseContinueAt` / `continueDecisionMs` | 선택 시각과 고민 시간 |
 
-> **`scamLevel`과 함께 읽어야 합니다.** 애매한 시나리오(S2·S4)에서는 계속하기가
-> **올바른 선택**이고, 진짜 사기(S1·S3)에서는 개입을 무시한 것입니다.
+> 현재 두 시나리오 모두 진짜 사기이므로 **계속하기 = 경고를 무시한 것**입니다.
+> 애매한 상황 대본을 추가하면 해석이 갈리므로 그때부터는 `scamLevel`과 함께 읽어야 합니다.
 
 ### 통화 종료
 
