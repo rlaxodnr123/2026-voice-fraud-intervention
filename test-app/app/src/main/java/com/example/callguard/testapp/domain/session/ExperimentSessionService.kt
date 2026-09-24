@@ -99,13 +99,20 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
     private val _speakerOn = MutableStateFlow(false)
     val speakerOn: StateFlow<Boolean> = _speakerOn
 
-    /** 개입 1의 선택 팝업 문구 (null이면 팝업 없음) */
-    private val _decisionPopup = MutableStateFlow<String?>(null)
-    val decisionPopup: StateFlow<String?> = _decisionPopup
+    /**
+     * 개입 화면 — 개입이 발동한 순간부터 세션이 끝날 때까지 **하나의 화면**으로 유지된다.
+     * 안내 중과 안내 후에 다른 화면을 띄우면 참가자가 화면 전환 자체에 반응하게 된다.
+     */
+    data class InterventionScreen(
+        val message: String,
+        /** 통화 이어가기/종료 버튼을 보여 주는가 (개입 1) */
+        val offerChoice: Boolean,
+        /** 안내가 끝나 버튼을 실제로 누를 수 있는가 */
+        val choiceEnabled: Boolean
+    )
 
-    /** 강제 종료 후 화면에 남는 안전 안내문 (개입 2) */
-    private val _terminationMessage = MutableStateFlow<String?>(null)
-    val terminationMessage: StateFlow<String?> = _terminationMessage
+    private val _interventionScreen = MutableStateFlow<InterventionScreen?>(null)
+    val interventionScreen: StateFlow<InterventionScreen?> = _interventionScreen
 
     /** 지인 조건이면 저장된 이름, 모르는 사람이면 빈 문자열 */
     private val _callerName = MutableStateFlow("")
@@ -223,8 +230,14 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
             vibrate = { vibrateAlert() },
             playWarningTone = { AlertTone.play() },
             speak = { text, onDone -> speak(text, VoiceRole.GUARD, flush = true) { onDone?.invoke() } },
-            setDecisionPopup = { message -> _decisionPopup.value = message },
-            endCall = { msg -> terminateByApp(msg) },
+            showInterventionScreen = { message, offerChoice ->
+                _interventionScreen.value = InterventionScreen(message, offerChoice, choiceEnabled = false)
+            },
+            enableChoice = {
+                _interventionScreen.value = _interventionScreen.value?.copy(choiceEnabled = true)
+            },
+            hideInterventionScreen = { _interventionScreen.value = null },
+            endCall = { terminateByApp() },
             onLog = { event, data ->
                 logger.log(event, data)
                 if (event == "intervention_fired") _interventionFired.value = true
@@ -410,8 +423,7 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         speechOnsetLogged = false
         audioOutputs.set(0)
         _interventionFired.value = false
-        _terminationMessage.value = null
-        _decisionPopup.value = null
+        _interventionScreen.value = null
         _micBlocked.value = false
         _remoteAudioBlocked.value = false
         _participantMuted.value = false
@@ -439,7 +451,7 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
             )
         }
 
-        intervention.arm(config, script.riskPhrase)
+        intervention.arm(config)
 
         // 벨소리 없이 바로 통화 중 상태로 시작한다. 이번 실험의 관심사는 수신 판단이
         // 아니라 "대사가 끝난 순간의 개입"이므로, 앞단을 길게 두면 세션마다 편차만 커진다.
@@ -466,7 +478,7 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         }
         val config = InterventionCatalog.findById(interventionId)
         activeIntervention = config
-        intervention.arm(config, activeScript?.riskPhrase.orEmpty())
+        intervention.arm(config)
         logger.log("intervention_rearmed", mapOf("interventionId" to config.id.name))
         if (logger.isActive) updateNotification("세션 진행 중 — " + config.label)
         emit("개입 조건을 바꿨습니다: " + config.label)
@@ -487,10 +499,10 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         intervention.resumeCall()
     }
 
-    /** 참가자가 팝업에서 [통화 종료]를 선택 */
-    fun endCallFromPopup() {
-        intervention.dismissPopup()
-        endCallByParticipant("popup_end")
+    /** 참가자가 개입 화면에서 [통화 종료]를 선택 */
+    fun endCallFromInterventionScreen() {
+        intervention.dismissScreen()
+        endCallByParticipant("intervention_screen_end")
     }
 
     fun toggleParticipantMute() {
@@ -519,18 +531,20 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         stopCall()
     }
 
-    /** 앱이 강제 종료 (개입 2) */
-    private fun terminateByApp(terminationScreenMessage: String) {
+    /**
+     * 앱이 강제 종료 (개입 2).
+     * 개입 화면은 **걷어내지 않는다** — 통화가 끊겼다고 다른 화면으로 넘어가면
+     * "안내부터 끝까지 한 화면"이라는 설계가 깨진다.
+     */
+    private fun terminateByApp() {
         if (_callState.value != CallState.IN_CALL) return
         logger.log("call_ended_by_app", mapOf("sinceInterventionMs" to sinceIntervention()))
-        _terminationMessage.value = terminationScreenMessage.ifBlank { null }
         stopCall()
     }
 
     private fun stopCall() {
         scriptPlayer.stop()
         durationJob?.cancel()
-        _decisionPopup.value = null
         _callState.value = CallState.ENDED
         updateNotification("통화 종료 — 세션 저장 대기")
     }
@@ -564,8 +578,7 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         _callState.value = CallState.IDLE
         _micBlocked.value = false
         _remoteAudioBlocked.value = false
-        _decisionPopup.value = null
-        _terminationMessage.value = null
+        _interventionScreen.value = null
         _currentLineIndex.value = -1
         _currentLineText.value = ""
         activeScript = null

@@ -86,8 +86,14 @@
 
 | 필드 | 의미 |
 |---|---|
-| `choseContinue` | 팝업에서 [통화 계속하기]를 골랐는가 |
-| `choseContinueAt` / `continueDecisionMs` | 선택 시각과 고민 시간 |
+| `choseContinue` | 개입 화면에서 [통화 이어가기]를 골랐는가 |
+| `choseContinueAt` / `continueDecisionMs` | 선택 시각, 개입 발동부터의 경과 |
+| `announcementMs` | 안내 음성 길이 |
+| `choiceEnabledAt` | 안내가 끝나 선택 버튼이 켜진 시각 |
+| **`decisionTimeMs`** | 버튼이 켜진 뒤 → 고를 때까지. **안내 재생 시간이 빠진 순수 판단 시간** |
+
+> 개입 화면은 발동과 **동시에** 뜨지만 버튼은 안내가 끝나야 켜집니다.
+> 그래서 "고민 시간"의 기준점은 화면이 뜬 시각이 아니라 `choiceEnabledAt`입니다.
 
 > 현재 두 시나리오 모두 진짜 사기이므로 **계속하기 = 경고를 무시한 것**입니다.
 > 애매한 상황 대본을 추가하면 해석이 갈리므로 그때부터는 `scamLevel`과 함께 읽어야 합니다.
@@ -137,8 +143,9 @@
 |---|---|---|
 | `intervention_armed` | 세션 시작 시 조건 무장 | `config`(적용 파라미터 전체) |
 | `intervention_fired` | **개입 발동** | `source`, `reason`, `config` |
-| `intervention_common_applied` | 공통 개입 적용 | `tone`, `vibrate`, `micBlocked`, `popup` |
+| `intervention_common_applied` | 공통 개입 + 개입 화면 표시 | `remoteAudioBlocked`, `micBlocked`, `tone`, `vibrate`, `screenShown`, `offerChoice` |
 | `intervention_tts_done` | 안내 음성 종료 | — |
+| `intervention_choice_enabled` | 선택 버튼이 눌리게 됨 (조건 1) | — |
 | `intervention_control_no_action` | 통제 조건이라 아무 동작 안 함 | — |
 | `intervention_duplicate_ignored` | 이미 발동한 뒤 또 요청됨 | `source` |
 | `intervention_skipped` | 무장 없이 발동 요청됨 | `why` |
@@ -153,9 +160,9 @@
 | `participant_speech` | 발화 최종 인식 | — |
 | `participant_speech_gated` | 스피커 음성이 마이크로 되들어온 구간 | — |
 | `participant_speech_manual` | 연구자가 대신 입력 | — |
-| `participant_chose_continue` | 팝업에서 [통화 계속하기] 선택 | ✅ |
+| `participant_chose_continue` | 개입 화면에서 [통화 이어가기] 선택 | ✅ |
 | `user_action` | 음소거·스피커 토글 | ✅ |
-| `call_ended_by_participant` | 참가자가 통화 종료 (`how`: `call_button` / `popup_end`) | ✅ |
+| `call_ended_by_participant` | 참가자가 통화 종료 (`how`: `call_button` / `intervention_screen_end`) | ✅ |
 | `call_ended_by_app` | 앱이 강제 종료 (개입 2) | — |
 | `leak_detected` / `leak_marked_none` | 유출 감지·확정 / 유출 없음 확정 | — |
 | `refusal_detected` | 거부 표현 감지 | — |

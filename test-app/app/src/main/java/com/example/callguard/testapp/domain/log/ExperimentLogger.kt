@@ -210,7 +210,7 @@ class ExperimentLogger(private val rootDir: File) {
 
         val continuedAt = firstTime("participant_chose_continue")
         val ttsDoneAt = firstTime("intervention_tts_done")
-        val popupShownAt = firstTime("intervention_popup_shown")
+        val choiceEnabledAt = firstTime("intervention_choice_enabled")
         // 참가자가 실제로 선택지를 보고 고민한 시간. 통화를 끊은 경우도 포함한다.
         val decisionAt = continuedAt ?: firstTime("call_ended_by_participant")
 
@@ -258,9 +258,10 @@ class ExperimentLogger(private val rootDir: File) {
             // 안내 음성 길이 — 반응시간에서 이 몫을 빼야 참가자의 판단 시간이 남는다
             "announcementDoneAt" to ttsDoneAt,
             "announcementMs" to diff(firedAt, ttsDoneAt),
-            "popupShownAt" to popupShownAt,
-            // 선택지가 제시된 뒤 참가자가 고른 데까지 걸린 시간 (조건 1 전용)
-            "decisionFromPopupMs" to diff(popupShownAt, decisionAt),
+            // 안내가 끝나 선택 버튼이 눌리게 된 시각 (조건 1 전용).
+            // 개입 화면 자체는 발동과 동시에 떠 있으므로, "고민 시작"은 이 시점이다.
+            "choiceEnabledAt" to choiceEnabledAt,
+            "decisionTimeMs" to diff(choiceEnabledAt, decisionAt),
 
             "choseContinue" to (continuedAt != null),
             "choseContinueAt" to continuedAt,

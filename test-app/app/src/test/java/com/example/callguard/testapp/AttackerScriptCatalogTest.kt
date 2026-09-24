@@ -81,16 +81,12 @@ class AttackerScriptCatalogTest {
     }
 
     @Test
-    fun `모든 시나리오가 개입 안내에 넣을 상황 구절을 가진다`() {
-        // 이 구절이 비면 안내가 "지금 통화 상황이…"로 뭉뚱그려져
-        // 참가자가 무엇을 근거로 판단할지 알 수 없게 된다
+    fun `개입 안내는 시나리오와 무관한 고정 문구다`() {
+        // 화면과 TTS가 같은 한 문장을 쓰므로 대본 데이터는 안내문에 관여하지 않는다.
+        // 시나리오별 문구가 다시 필요해지면 여기서부터 설계를 되살려야 한다.
         AttackerScriptCatalog.scripts.forEach { script ->
-            assertTrue(script.id + ": 상황 구절 없음", script.riskPhrase.isNotBlank())
-            // 관형형으로 끝나 "상황이 보이스피싱으로…"에 자연스럽게 이어져야 한다
-            assertTrue(
-                script.id + ": 구절이 '~하는' 형태가 아닙니다: " + script.riskPhrase,
-                script.riskPhrase.endsWith("하는")
-            )
+            assertTrue(script.id + ": 상황 설명 없음", script.situation.isNotBlank())
+            assertTrue(script.id + ": 핵심 요소 없음", script.keyFactors.isNotEmpty())
         }
     }
 }

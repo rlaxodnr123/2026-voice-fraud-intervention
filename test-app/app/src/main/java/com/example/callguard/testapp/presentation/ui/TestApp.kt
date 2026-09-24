@@ -25,13 +25,17 @@ import com.example.callguard.testapp.presentation.viewmodel.TestAppViewModel
  *
  *  - IDLE     : 연구자 설정 화면
  *  - IN_CALL  : 참가자 통화 화면 (일반 전화앱처럼 보여야 한다)
- *  - ENDED    : 통화 종료 화면 (개입 2의 안전 안내 포함)
+ *  - ENDED    : 통화 종료 화면
  *
- * 연구자 패널은 어느 상태에서든 최상위 오버레이로 열린다.
+ * **개입 화면은 통화 화면·종료 화면보다 위에서 그린다.** 개입 2는 안내가 끝나면 통화가
+ * 끊겨 아래 화면이 IN_CALL → ENDED로 바뀌는데, 개입 화면이 그 위를 덮고 있으므로
+ * 참가자 눈에는 아무 변화가 없다 — 개입은 처음부터 끝까지 한 화면이다.
+ *
+ * 연구자 패널 버튼은 그보다도 위에 둔다. 개입 2에서 개입 화면이 계속 남아 있으므로,
+ * 버튼이 그 아래 깔리면 연구자가 세션을 닫을 길이 없어진다.
  *
  * composable 람다에서 이른 `return`을 쓰지 않는다 — Compose는 그런 비지역 반환에서
  * 그룹 종료 호출을 맞춰 내보내지 못해 슬롯 테이블이 깨지고 첫 컴포지션에서 죽는다.
- * 분기는 반드시 if/else로 표현한다.
  */
 @Composable
 fun TestApp(viewModel: TestAppViewModel) {
@@ -52,6 +56,7 @@ fun TestApp(viewModel: TestAppViewModel) {
             ConnectingPlaceholder()
         } else {
             val callState by svc.callState.collectAsState()
+            val intervention by svc.interventionScreen.collectAsState()
 
             when {
                 logVisible -> LogScreen(viewModel)
@@ -60,8 +65,25 @@ fun TestApp(viewModel: TestAppViewModel) {
                 else -> CallEndedScreen(viewModel, svc)
             }
 
+            // 통화/종료 화면 위 — 상태가 바뀌어도 참가자에게는 같은 화면으로 보인다
+            if (!logVisible) {
+                intervention?.let { state ->
+                    InterventionScreen(
+                        state = state,
+                        onContinue = { svc.resumeAfterIntervention() },
+                        onEnd = { svc.endCallFromInterventionScreen() }
+                    )
+                }
+            }
+
             if (panelVisible) {
                 ResearcherPanel(viewModel, svc)
+            } else if (callState != ExperimentSessionService.CallState.IDLE && !logVisible) {
+                // 개입 화면보다 위 — 개입 2에서도 연구자가 패널에 들어갈 수 있어야 한다
+                ResearcherPanelButton(
+                    onClick = { viewModel.toggleResearcherPanel() },
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
             }
         }
     }

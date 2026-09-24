@@ -235,7 +235,7 @@ fun ResearcherPanel(viewModel: TestAppViewModel, service: ExperimentSessionServi
             if (followUps.isNotEmpty()) {
                 PanelCard("⑤ 개입 후 후속 대사") {
                     Text(
-                        "참가자가 팝업에서 [통화 계속하기]를 고른 뒤 대화가 이어질 때 사용합니다. " +
+                        "참가자가 개입 화면에서 [통화 이어가기]를 고른 뒤 대화가 이어질 때 사용합니다. " +
                             "강제 종료 조건에서는 통화가 끊기므로 쓰이지 않습니다." +
                             if (mode == PlaybackMode.LIVE) " (라이브 모드에서는 직접 읽으세요)" else "",
                         color = CallSubText, fontSize = 11.sp

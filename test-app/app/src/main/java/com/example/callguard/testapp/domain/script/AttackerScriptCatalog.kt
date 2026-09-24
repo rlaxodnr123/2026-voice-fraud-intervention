@@ -42,7 +42,6 @@ object AttackerScriptCatalog {
             defaultCallerName = "김민수",
             callerNumber = "010-2841-7···",
             requestedInfo = "50만 원 송금 (타인 명의 계좌)",
-            riskPhrase = "다른 사람 계좌로 송금을 요구하는",
             keyFactors = listOf(
                 "지인을 이용한 신뢰 형성",
                 "본인 계좌를 못 쓴다는 설명",
@@ -76,7 +75,6 @@ object AttackerScriptCatalog {
             defaultCallerName = "",
             callerNumber = "02-3140-0000",
             requestedInfo = "계좌 비밀번호 앞 두 자리",
-            riskPhrase = "계좌 비밀번호를 요구하는",
             keyFactors = listOf(
                 "모르는 사람의 전화",
                 "금융기관 사칭",
@@ -118,9 +116,6 @@ object AttackerScriptCatalog {
                 count > 1 -> problems += script.id + ": 개입 지점이 " + count + "개입니다 (1개여야 함)"
                 !script.mainLines.last().isInterventionPoint ->
                     problems += script.id + ": 개입 지점이 마지막 줄이 아닙니다 — 대사가 끝나면 개입이라는 설계와 어긋납니다"
-            }
-            if (script.riskPhrase.isBlank()) {
-                problems += script.id + ": 개입 안내에 넣을 상황 구절이 없습니다"
             }
             if (script.relationship == CallerRelationship.ACQUAINTANCE && script.defaultCallerName.isBlank()) {
                 problems += script.id + ": 지인 조건인데 화면에 뜰 이름이 없습니다"

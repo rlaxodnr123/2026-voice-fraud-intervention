@@ -7,20 +7,22 @@ package com.example.callguard.testapp.domain.intervention
  * 연구자가 버튼을 누른 것은 "개입 지점이 마침 그때 도달한 것"과 결과가 완전히 동일해야
  * 두 경로 차이로 측정이 오염되지 않는다.
  *
- * 원자 동작(차단/진동/경고음/TTS/팝업/종료)을 전부 함수로 주입받으므로 이 클래스는
+ * 원자 동작(차단/진동/경고음/화면/TTS/종료)을 전부 함수로 주입받으므로 이 클래스는
  * Android 프레임워크에 의존하지 않는다 → JVM 단위 테스트로 조건 조합을 검증할 수 있다.
  *
  * 실행 순서는 고정이다:
- *   ① 스피커 차단(상대방 음성 끊김) + 진동 + 경고음 + 마이크 차단 — 즉시, 동시
- *   ② [toneGapMs] 뒤 상황 안내 TTS
- *   ③ 조건 1 → 계속/종료 선택 팝업 (안내가 끝난 뒤)
- *      조건 2 → 안내가 끝난 뒤 통화 종료
+ *   ① 스피커 차단 + 마이크 차단 + 진동 + 경고음 + **개입 화면 표시** — 즉시, 동시
+ *   ② [toneGapMs] 뒤 화면에 적힌 그 문장을 TTS가 읽는다
+ *   ③ 안내가 끝나면
+ *        조건 1 → 같은 화면의 선택 버튼을 활성화
+ *        조건 2 → 통화 종료 (화면은 그대로 둔다)
  *
- * ①에서 스피커를 가장 먼저 끊는 이유: 상대방이 계속 말하는 위에 경고음과 안내가 겹치면
- * 참가자가 셋 다 못 알아듣는다.
+ * ①에서 화면을 TTS보다 먼저 띄우는 이유: 안내 중과 안내 후에 다른 화면을 띄우면
+ * 참가자가 화면 전환 자체에 반응하게 되어 측정 대상이 흐려진다. 처음부터 끝까지 한 화면이다.
+ * ①에서 스피커를 끊는 이유: 상대가 계속 말하는 위에 경고음과 안내가 겹치면 셋 다 못 알아듣는다.
  * ②에서 간격을 두는 이유: 경고음(약 0.6초)과 안내 음성이 겹치면 안내의 첫 어절이 묻힌다.
- * ③에서 TTS 완료를 기다리는 이유: 설명을 다 듣기 전에 선택지가 뜨거나 통화가 끊기면
- * "요약을 듣고 판단한다"는 조건 자체가 성립하지 않는다.
+ * ③에서 TTS 완료를 기다리는 이유: 안내를 다 듣기 전에 고르거나 끊기면
+ * "안내를 듣고 판단한다"는 조건 자체가 성립하지 않는다.
  */
 class InterventionController(
     /** 상대방 음성을 즉시 끊는다 */
@@ -29,9 +31,13 @@ class InterventionController(
     private val vibrate: () -> Unit,
     private val playWarningTone: () -> Unit,
     private val speak: (text: String, onDone: (() -> Unit)?) -> Unit,
-    /** 통화 계속/종료 선택 팝업 표시·해제 */
-    private val setDecisionPopup: (message: String?) -> Unit,
-    private val endCall: (terminationScreenMessage: String) -> Unit,
+    /** 개입 화면을 띄운다. 선택 버튼은 안내가 끝나야 활성화된다. */
+    private val showInterventionScreen: (message: String, offerChoice: Boolean) -> Unit,
+    /** 안내가 끝나 선택 버튼을 쓸 수 있게 한다 */
+    private val enableChoice: () -> Unit,
+    /** 개입 화면을 걷어낸다 */
+    private val hideInterventionScreen: () -> Unit,
+    private val endCall: () -> Unit,
     private val onLog: (event: String, data: Map<String, Any?>) -> Unit,
     /** 지연 실행 주입 — 테스트에서는 즉시 실행으로 바꿔 끼운다 */
     private val postDelayed: (delayMs: Long, action: () -> Unit) -> Unit = { _, action -> action() },
@@ -45,10 +51,6 @@ class InterventionController(
     @Volatile
     private var config: InterventionConfig? = null
 
-    /** 이번 세션에서 읽어 줄 상황 요약 (시나리오마다 다르다) */
-    @Volatile
-    private var riskPhrase: String = ""
-
     @Volatile
     var fired: Boolean = false
         private set
@@ -58,21 +60,20 @@ class InterventionController(
     var firedAt: Long? = null
         private set
 
-    /** 참가자가 [통화 계속하기]를 골랐는가 */
+    /** 참가자가 [통화 이어가기]를 골랐는가 */
     @Volatile
     var resumed: Boolean = false
         private set
 
     val armedConfig: InterventionConfig? get() = config
 
-    /** 세션 시작 시 조건과 상황 요약을 무장한다. */
-    fun arm(cfg: InterventionConfig, riskPhrase: String = "") = synchronized(lock) {
+    /** 세션 시작 시 조건을 무장한다. */
+    fun arm(cfg: InterventionConfig) = synchronized(lock) {
         config = cfg
-        this.riskPhrase = riskPhrase
         fired = false
         firedAt = null
         resumed = false
-        onLog("intervention_armed", mapOf("config" to cfg.toLogMap(riskPhrase)))
+        onLog("intervention_armed", mapOf("config" to cfg.toLogMap()))
     }
 
     /** 대본의 개입 지점 도달로 자동 발동 */
@@ -83,7 +84,6 @@ class InterventionController(
 
     private fun fire(source: String, reason: String) {
         val cfg: InterventionConfig
-        val summary: String
         synchronized(lock) {
             cfg = config ?: run {
                 onLog("intervention_skipped", mapOf("why" to "not_armed", "source" to source))
@@ -97,13 +97,9 @@ class InterventionController(
             }
             fired = true
             firedAt = now()
-            summary = riskPhrase
         }
 
-        onLog(
-            "intervention_fired",
-            mapOf("source" to source, "reason" to reason, "config" to cfg.toLogMap(summary))
-        )
+        onLog("intervention_fired", mapOf("source" to source, "reason" to reason, "config" to cfg.toLogMap()))
 
         if (!cfg.active) {
             // 무개입 통제군: 발동 시점만 기록하고 아무 동작도 하지 않는다.
@@ -112,58 +108,60 @@ class InterventionController(
             return
         }
 
-        // ① 공통 개입 — 즉시, 동시에. 상대방 음성을 가장 먼저 끊는다.
+        // ① 공통 개입 + 개입 화면 — 즉시, 동시에. 상대방 음성을 가장 먼저 끊는다.
         if (cfg.blockRemoteAudio) setRemoteAudioBlocked(true)
         if (cfg.warningTone) playWarningTone()
         if (cfg.vibrate) vibrate()
         if (cfg.blockMic) setMicBlocked(true)
+        showInterventionScreen(cfg.announcement, cfg.offerChoice)
         onLog(
             "intervention_common_applied",
             mapOf(
                 "remoteAudioBlocked" to cfg.blockRemoteAudio,
+                "micBlocked" to cfg.blockMic,
                 "tone" to cfg.warningTone,
                 "vibrate" to cfg.vibrate,
-                "micBlocked" to cfg.blockMic
+                "screenShown" to true,
+                "offerChoice" to cfg.offerChoice
             )
         )
 
-        val message = cfg.buildTtsMessage(summary)
-        if (message.isBlank()) {
-            afterAnnouncement(cfg, summary)
+        if (cfg.announcement.isBlank()) {
+            afterAnnouncement(cfg)
             return
         }
-        // ② 경고음이 끝난 뒤 안내 → ③ 안내가 끝난 뒤 팝업 또는 종료
+        // ② 경고음이 끝난 뒤 화면의 문장을 그대로 읽는다 → ③ 선택 활성화 또는 종료
         val gap = if (cfg.warningTone) toneGapMs else 0L
         postDelayed(gap) {
-            speak(message) {
+            speak(cfg.announcement) {
                 onLog("intervention_tts_done", emptyMap())
-                afterAnnouncement(cfg, summary)
+                afterAnnouncement(cfg)
             }
         }
     }
 
-    private fun afterAnnouncement(cfg: InterventionConfig, summary: String) {
-        if (cfg.showDecisionPopup) {
-            setDecisionPopup(cfg.buildPopupMessage(summary))
-            // 발동 시각만으로는 참가자의 판단 시간을 알 수 없다 —
-            // 안내 음성이 십수 초라 반응시간의 대부분이 재생 시간이기 때문이다.
-            // 선택지가 실제로 제시된 시각을 따로 남겨야 "고민한 시간"을 뽑을 수 있다.
-            onLog("intervention_popup_shown", emptyMap())
+    private fun afterAnnouncement(cfg: InterventionConfig) {
+        if (cfg.offerChoice) {
+            // 화면은 그대로 두고 버튼만 쓸 수 있게 한다 — 여기가 "고민 시작" 시각이다.
+            enableChoice()
+            onLog("intervention_choice_enabled", emptyMap())
         }
-        if (cfg.terminateCall) endCall(cfg.terminationScreenMessage)
+        // 조건 2는 통화만 끊고 화면은 유지한다. 끊겼다고 다른 화면으로 넘어가면
+        // "한 화면으로 끝낸다"는 설계가 깨진다.
+        if (cfg.terminateCall) endCall()
     }
 
     /**
-     * 참가자가 [통화 계속하기]를 골랐을 때 (개입 1 전용).
+     * 참가자가 [통화 이어가기]를 골랐을 때 (개입 1 전용).
      *
-     * 스피커와 마이크 차단을 **반드시** 푼다. 차단이 남으면 "계속하기"를 고른 참가자가
+     * 스피커와 마이크 차단을 **반드시** 푼다. 차단이 남으면 이어가기를 고른 참가자가
      * 상대 말을 듣지도 말하지도 못해 선택지가 허울이 되고, 조건 1이 조건 2와 같아진다.
      * 시나리오는 발동 상태로 남겨 둔다 — 재발동으로 개입이 두 번 실행되면 측정이 오염된다.
      */
     fun resumeCall() = synchronized(lock) {
         if (!fired) return
         resumed = true
-        setDecisionPopup(null)
+        hideInterventionScreen()
         setRemoteAudioBlocked(false)
         setMicBlocked(false)
         onLog(
@@ -173,18 +171,17 @@ class InterventionController(
     }
 
     /** 참가자가 [통화 종료]를 골랐을 때 — 실제 종료는 호출자가 수행한다 */
-    fun dismissPopup() = synchronized(lock) {
-        setDecisionPopup(null)
+    fun dismissScreen() = synchronized(lock) {
+        hideInterventionScreen()
     }
 
-    /** 다음 세션을 위한 초기화 — 차단과 팝업을 반드시 걷어내고 시작한다. */
+    /** 다음 세션을 위한 초기화 — 차단과 개입 화면을 반드시 걷어내고 시작한다. */
     fun reset() = synchronized(lock) {
         config = null
-        riskPhrase = ""
         fired = false
         firedAt = null
         resumed = false
-        setDecisionPopup(null)
+        hideInterventionScreen()
         setRemoteAudioBlocked(false)
         setMicBlocked(false)
         onLog("intervention_reset", emptyMap())

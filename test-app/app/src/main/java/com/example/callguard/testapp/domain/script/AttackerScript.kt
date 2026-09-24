@@ -54,16 +54,6 @@ data class AttackerScript(
     val callerNumber: String,
     /** 상대가 요구한 것. 애매한 시나리오는 "없음"일 수 있다 */
     val requestedInfo: String,
-    /**
-     * 개입 TTS가 "~~~ 상황이 보이스피싱으로 의심되어…"의 앞자리에 넣어 읽는 **짧은 구절**.
-     *
-     * 긴 설명을 읽으면 안내만 십수 초가 걸려, 참가자의 반응시간이 대부분 재생 시간으로 차 버린다.
-     * 무슨 일이 있었는지 알아들을 만큼만 짧게 쓴다 (관형형으로 끝나 "상황"에 이어진다).
-     *
-     * 판단을 단정하지 않고 **사실만** 적는다. 애매한 시나리오(S2·S4)에서 앱이
-     * "사기입니다"라고 단정하면, 측정 대상이 개입 방식이 아니라 앱의 오판 자체가 된다.
-     */
-    val riskPhrase: String,
     /** 연구자 패널에 띄우는 핵심 위험 요소 / 핵심 특징 */
     val keyFactors: List<String>,
     val lines: List<ScriptLine>
