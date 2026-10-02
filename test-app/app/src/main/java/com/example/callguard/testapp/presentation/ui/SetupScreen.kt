@@ -11,17 +11,22 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.callguard.testapp.domain.script.AttackerScriptCatalog
+import com.example.callguard.testapp.domain.script.AttackerVoice
+import com.example.callguard.testapp.domain.script.AttackerVoiceAssets
 import com.example.callguard.testapp.domain.script.CallerRelationship
 import com.example.callguard.testapp.domain.script.PlaybackMode
 import com.example.callguard.testapp.domain.script.ScamLevel
+import com.example.callguard.testapp.domain.script.VoiceAssetStatus
 import com.example.callguard.testapp.domain.session.ExperimentSessionService
 import com.example.callguard.testapp.presentation.viewmodel.TestAppViewModel
 
@@ -36,6 +41,7 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
     val interventionId by viewModel.interventionId.collectAsState()
     val scriptId by viewModel.scriptId.collectAsState()
     val mode by viewModel.playbackMode.collectAsState()
+    val voice by viewModel.attackerVoice.collectAsState()
     val record by viewModel.recordAudio.collectAsState()
     val callerName by viewModel.callerNameOverride.collectAsState()
     val sttReady by service.sttReady.collectAsState()
@@ -43,6 +49,16 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
 
     val selectedScript = AttackerScriptCatalog.findById(scriptId)
     val isAcquaintance = selectedScript?.relationship == CallerRelationship.ACQUAINTANCE
+
+    // 어느 목소리에 녹음본이 갖춰졌는지를 **고르는 순간** 보여 준다. 녹음본이 없는 목소리를
+    // 고르면 앱이 조용히 시스템 TTS로 대체하는데, 세션이 끝난 뒤 로그를 봐야 알게 되고
+    // 그때는 이미 그 참가자의 세션이 날아간 상태다.
+    // asset은 APK에 박혀 있어 실행 중에 바뀌지 않으므로 시나리오당 한 번만 조회한다.
+    val context = LocalContext.current
+    val voiceStatuses = remember(scriptId) {
+        selectedScript?.let { AttackerVoiceAssets.statuses(context, it) } ?: emptyList()
+    }
+    val selectedVoiceStatus = voiceStatuses.firstOrNull { it.voice == voice }
 
     Column(
         modifier = Modifier
@@ -146,7 +162,60 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
 
         Spacer(Modifier.height(14.dp))
 
-        SectionCard("④ 상대방 음성 재생 방식") {
+        SectionCard("④ 상대방 목소리 (연령대 × 성별)") {
+            AttackerVoice.ageBands.forEachIndexed { rowIndex, band ->
+                if (rowIndex > 0) Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    viewModel.voiceOptions.filter { it.ageBand == band }.forEach { option ->
+                        VoiceChoice(
+                            voice = option,
+                            status = voiceStatuses.firstOrNull { it.voice == option },
+                            selected = voice == option,
+                            onClick = { viewModel.attackerVoice.value = option },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "같은 대사라도 누가 말하는가에 따라 참가자가 느끼는 신뢰도와 압박감이 달라집니다. " +
+                    "특히 지인 시나리오는 \"내가 아는 그 사람일 수 있다\"고 받아들여져야 성립하므로, " +
+                    "참가자 연령·성별과 어울리는 목소리를 골라 주세요.",
+                color = CallSubText, fontSize = 11.sp
+            )
+
+            // 목소리가 실제로 들리는 조건을 여기서 못 알려 주면, 연구자는 고른 대로
+            // 나간다고 믿은 채 세션을 쌓게 된다.
+            if (mode != PlaybackMode.RECORDING) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "⚠ 지금 재생 방식(" + mode.label + ")에서는 이 선택이 소리에 반영되지 않습니다. " +
+                        "시스템 TTS가 읽으므로 목소리는 기기 설정대로 나갑니다.\n" +
+                        "⑤에서 '녹음본 재생'을 골라야 고른 목소리가 들립니다 " +
+                        "(로그에 attackerVoiceApplied=false 로 남습니다).",
+                    color = WarnAmber, fontSize = 12.sp
+                )
+            } else if (selectedVoiceStatus != null && !selectedVoiceStatus.isComplete) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "⚠ " + voice.label + " 녹음본이 부족합니다 (" +
+                        selectedVoiceStatus.mainFound + "/" + selectedVoiceStatus.mainTotal +
+                        "). 없는 대사는 시스템 TTS로 나가 통화 중에 목소리가 바뀝니다.\n" +
+                        "assets/" + voice.assetDir(scriptId) + "/ 에 녹음본을 넣고 앱을 다시 빌드하세요 " +
+                        "(tools/generate_attacker_voices.py).",
+                    color = AccentRed, fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        SectionCard("⑤ 상대방 음성 재생 방식") {
             viewModel.playbackOptions.forEach { option ->
                 OptionRow(
                     title = option.label,
@@ -169,7 +238,7 @@ fun SetupScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) 
 
         Spacer(Modifier.height(14.dp))
 
-        SectionCard("⑤ 기록") {
+        SectionCard("⑥ 기록") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(checked = record, onCheckedChange = { viewModel.recordAudio.value = it })
                 Spacer(Modifier.width(12.dp))
@@ -322,6 +391,50 @@ private fun Badge(text: String, color: Color) {
             .background(color.copy(alpha = 0.18f))
             .padding(horizontal = 7.dp, vertical = 3.dp)
     )
+}
+
+/**
+ * 목소리 선택 칸 — 이름과 **녹음본이 갖춰졌는지**를 같이 보여 준다.
+ *
+ * 녹음본 상태를 함께 띄우는 이유: 선택은 되지만 소리가 안 나오는 목소리가 있을 수 있고,
+ * 그 사실은 세션이 끝난 뒤 로그를 봐야 드러난다. 고르는 자리에서 보이지 않으면
+ * 연구자가 알 길이 없다.
+ */
+@Composable
+private fun VoiceChoice(
+    voice: AttackerVoice,
+    status: VoiceAssetStatus?,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val statusColor = when {
+        status == null -> CallSubText
+        status.isComplete -> SafeGreen
+        status.isEmpty -> CallSubText
+        else -> WarnAmber
+    }
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) InfoBlue.copy(alpha = 0.22f) else CallControl)
+            .border(
+                width = if (selected) 1.dp else 0.dp,
+                color = if (selected) InfoBlue else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(
+            voice.label,
+            color = Color.White,
+            fontSize = 14.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
+        Spacer(Modifier.height(3.dp))
+        Text(status?.summary ?: "-", color = statusColor, fontSize = 10.sp)
+    }
 }
 
 @Composable

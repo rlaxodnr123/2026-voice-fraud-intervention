@@ -34,6 +34,9 @@ class ExperimentLoggerTest {
         relationship = "ACQUAINTANCE",
         callerDisplayed = "김민수",
         playbackMode = mode,
+        attackerVoice = "m30",
+        attackerVoiceLabel = "30대 남성",
+        attackerVoiceApplied = mode == "RECORDING",
         startedAt = System.currentTimeMillis()
     )
 
@@ -51,6 +54,8 @@ class ExperimentLoggerTest {
         assertTrue(dir.name.contains("T2"))
         assertTrue(dir.name.contains("S1"))
         assertTrue(dir.name.contains("POPUP_TTS"))
+        // 목소리까지 들어가야 폴더 목록만으로 자극이 구분된다
+        assertTrue(dir.name.contains("m30"))
     }
 
     @Test

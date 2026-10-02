@@ -50,12 +50,7 @@ object AttackerScriptCatalog {
                 "오늘 저녁에 갚겠다는 시간 압박"
             ),
             lines = listOf(
-                ScriptLine("어 난데", pauseAfterMs = 900),
-                ScriptLine("내가 지금 급하게 처리해야 할 일이 생겼는데 계좌가 잠겨서 이체를 못 하고 있어."),
-                ScriptLine("혹시 50만 원 정도만 대신 보내줄 수 있어?", pauseAfterMs = 900),
-                ScriptLine("내 계좌는 지금 사용을 못 해서 다른 계좌번호를 보내줄게."),
-                ScriptLine(
-                    "내가 아는 사람 계좌니까 거기로 보내주면 오늘 저녁에 바로 돌려줄게.",
+                ScriptLine("어 난데, 내가 지금 급하게 처리해야 할 일이 생겼는데 계좌가 잠겨서 이체를 못 하고 있어. 혹시 50만 원 정도만 대신 보내줄 수 있어? 내 계좌는 지금 사용을 못 해서 다른 계좌번호를 보내줄게. 내가 아는 사람 계좌니까 거기로 보내주면 오늘 저녁에 바로 돌려줄게.",
                     isInterventionPoint = true
                 ),
                 // ── 개입 ──

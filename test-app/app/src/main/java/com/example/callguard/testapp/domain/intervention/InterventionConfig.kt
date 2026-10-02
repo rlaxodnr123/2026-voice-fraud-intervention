@@ -79,7 +79,7 @@ object InterventionCatalog {
             vibrate = true,
             warningTone = true,
             announcement = "보이스피싱으로 의심되어 통화가 잠시 중단되었습니다. " +
-                "상대방과 나의 음성이 서로 차단되어 전달되지 않습니다. 통화를 이어가시겠습니까?",
+                "상대방과 나의 음성이 서로 차단되어 전달되지 않습니다. 통화를 이어가려면 화면의 버튼을 눌러주세요.",
             offerChoice = true,
             terminateCall = false
         ),

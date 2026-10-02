@@ -34,6 +34,9 @@
 | `relationship` | `ACQUAINTANCE` / `STRANGER` — 현재 유일한 시나리오 축 |
 | `callerDisplayed` | 통화 화면에 실제로 띄운 발신자 (지인은 이름, 모르는 사람은 번호) |
 | `playbackMode` | `AUTO_TTS` / `RECORDING` / `LIVE` |
+| `attackerVoice` | 상대방 목소리 `m20`/`f20`/`m30`/`f30`/`m40`/`f40` (연령대 × 성별) |
+| `attackerVoiceLabel` | 목소리 표시 이름 (예: `40대 여성`) |
+| `attackerVoiceApplied` | 고른 목소리가 실제로 소리에 반영됐는가. `RECORDING` 모드에서만 `true` — **`false`인 세션을 목소리 조건으로 묶으면 안 된다** |
 | `startedAt`, `startedAtText` | 세션 시작 시각 |
 
 ---
@@ -41,7 +44,7 @@
 ## summary — 분석 지표
 
 ### 조건
-`participantId` · `trialOrder` · `interventionId` · `scriptId` · **`scamLevel`** · **`relationship`** · `playbackMode`
+`participantId` · `trialOrder` · `interventionId` · `scriptId` · **`scamLevel`** · **`relationship`** · `playbackMode` · **`attackerVoice`** · `attackerVoiceApplied`
 
 ### 개입 타이밍
 
@@ -115,7 +118,7 @@
 |---|---|
 | `gatedSpeechCount` | 스피커 음성이 마이크로 되들어와 제외된 인식 건수. 크면 에코가 심한 환경 |
 | `micErrorCount` | 마이크 오류 — 발화 기록이 불완전할 수 있음 |
-| `ttsFallbackCount` | 녹음본이 없어 TTS로 대체된 대사 수 — 자극 불일치 |
+| `ttsFallbackCount` | 녹음본이 없어 TTS로 대체된 대사 수 — 자극 불일치. **0이 아니면 통화 도중 목소리가 바뀌었다는 뜻이므로 목소리 조건 분석에서 제외한다** |
 | `observationNotes` | 연구자가 원클릭으로 남긴 관찰 목록 |
 | `sessionEndReason`, `eventCount` | 세션 종료 사유, 이벤트 총 개수 |
 
@@ -128,11 +131,11 @@
 | type | 언제 | 주요 data |
 |---|---|---|
 | `session_started` | 세션 시작 | meta 전체 |
-| `script_started` | 대본 재생 시작 | `scriptId`, `mode`, `lineCount`, `interventionPointIndex`, `scamLevel`, `relationship`, `requestedInfo` |
+| `script_started` | 대본 재생 시작 | `scriptId`, `mode`, `voice`, `voiceLabel`, `lineCount`, `interventionPointIndex`, `scamLevel`, `relationship`, `requestedInfo` |
 | `attacker_line_start` / `attacker_line_end` | 상대방 대사 시작/종료 | `index`, `isInterventionPoint`, `text`, `live` |
-| `attacker_line_fallback_tts` | 녹음본이 없어 TTS로 대체됨 | `index`, `expected` |
+| `attacker_line_fallback_tts` | 녹음본이 없어 TTS로 대체됨 — **그 대사만 고른 목소리가 아닌 소리가 나갔다** | `index`, `voice`, `expected`(찾던 경로) |
 | `attacker_audio_error` | 녹음본 재생 실패 | `asset`, `what`/`error` |
-| `attacker_followup` | 개입 후 후속 대사 재생 | `index`, `text` |
+| `attacker_followup` | 개입 후 후속 대사 재생 | `index`, `text`, `mode`, `voice`, `source`(`recording`/`tts`) |
 | `intervention_point_reached` | **개입 지점 도달 — 개입 기준점** | `scriptId`, `requestedInfo`, `liveManualAdvance` |
 | `script_finished` | 대본 끝까지 재생됨 | — |
 | `session_finished` | 세션 종료 | `reason`, `recordingFile`, `recordingDurationMs` |

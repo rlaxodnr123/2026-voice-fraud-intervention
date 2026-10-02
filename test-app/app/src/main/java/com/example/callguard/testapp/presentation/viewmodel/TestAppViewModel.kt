@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.callguard.testapp.domain.intervention.InterventionCatalog
 import com.example.callguard.testapp.domain.intervention.InterventionId
 import com.example.callguard.testapp.domain.script.AttackerScriptCatalog
+import com.example.callguard.testapp.domain.script.AttackerVoice
 import com.example.callguard.testapp.domain.script.CallerRelationship
 import com.example.callguard.testapp.domain.script.PlaybackMode
 import com.example.callguard.testapp.domain.session.ExperimentSessionService
@@ -45,6 +46,14 @@ class TestAppViewModel(app: Application) : AndroidViewModel(app) {
     val scriptId = MutableStateFlow(AttackerScriptCatalog.scripts.first().id)
     val playbackMode = MutableStateFlow(PlaybackMode.AUTO_TTS)
     val recordAudio = MutableStateFlow(true)
+
+    /**
+     * 상대방 목소리 (연령대 × 성별 6종). 참가자에 맞춰 연구자가 세션마다 고른다.
+     *
+     * 기본값을 30대 남성으로 둔 이유: 두 시나리오 모두 이 목소리로 성립하므로
+     * 연구자가 고르는 것을 잊어도 세션이 깨지지 않는다.
+     */
+    val attackerVoice = MutableStateFlow(AttackerVoice.M30)
 
     /**
      * 지인 조건에서 통화 화면에 띄울 이름. 비우면 시나리오 기본값을 쓴다.
@@ -105,23 +114,39 @@ class TestAppViewModel(app: Application) : AndroidViewModel(app) {
             notify("참가자 ID를 입력하세요.")
             return
         }
-        svc.startSession(
-            participantId = participantId.value.trim(),
-            trialOrder = trialOrder.value,
-            interventionId = interventionId.value,
-            scriptId = scriptId.value,
-            mode = playbackMode.value,
-            recordAudio = recordAudio.value,
-            callerNameOverride = callerNameOverride.value.trim()
-        )
+        viewModelScope.launch {
+            // 앞 세션이 저장되지 않은 채 종료 상태로 남아 있으면 먼저 닫는다.
+            // 그대로 새 세션을 시작하면 그 세션의 로그(session_finished)와 녹음이
+            // 통째로 버려진다 — 현장에서 실제로 한 세션을 그렇게 잃었다.
+            if (svc.callState.value == ExperimentSessionService.CallState.ENDED) {
+                val dir = runCatching {
+                    withContext(Dispatchers.IO) { svc.finishSession("auto_finished_before_next") }
+                }.getOrNull()
+                if (dir != null) notify("이전 세션을 저장했습니다: " + dir.name)
+            }
+            svc.startSession(
+                participantId = participantId.value.trim(),
+                trialOrder = trialOrder.value,
+                interventionId = interventionId.value,
+                scriptId = scriptId.value,
+                mode = playbackMode.value,
+                voice = attackerVoice.value,
+                recordAudio = recordAudio.value,
+                callerNameOverride = callerNameOverride.value.trim()
+            )
+        }
     }
 
     /**
-     * 세션을 닫고 로그·녹음을 확정한다.
+     * 세션을 닫고 로그·녹음을 확정한다. 끝나면 서비스가 상태를 IDLE로 돌리므로
+     * 화면은 처음(설정) 화면으로 돌아간다.
      *
      * 파일 확정은 녹음 스레드 정리와 기록 스레드 대기를 포함해 수 초가 걸릴 수 있다.
      * 메인 스레드에서 하면 그동안 화면이 얼어붙고, 길어지면 ANR로 앱이 죽는다.
      * 그래서 IO로 넘기고 그동안 버튼을 잠근다.
+     *
+     * 저장이 실패해도 잠금은 반드시 푼다 — 풀지 않으면 "저장 중…"에서 멈춘 화면에
+     * 갇혀 다음 시나리오를 시작할 수 없다.
      */
     fun finishSession(reason: String) {
         val svc = _service.value ?: run {
@@ -131,13 +156,17 @@ class TestAppViewModel(app: Application) : AndroidViewModel(app) {
         if (_savingSession.value) return
         _savingSession.value = true
         viewModelScope.launch {
-            val dir = withContext(Dispatchers.IO) { svc.finishSession(reason) }
+            val result = runCatching { withContext(Dispatchers.IO) { svc.finishSession(reason) } }
             _savingSession.value = false
-            notify(if (dir != null) "세션 저장 완료: " + dir.name else "저장할 세션이 없습니다.")
             _researcherPanelVisible.value = false
-            // 다음 통화는 같은 참가자의 다음 순번이므로 자동으로 올려 둔다 (연구자 실수 방지).
-            // 한 참가자는 시나리오 4종을 한 번씩 겪으므로 4에서 멈춘다.
-            if (dir != null) trialOrder.value = (trialOrder.value + 1).coerceAtMost(4)
+            result.onSuccess { dir ->
+                notify(if (dir != null) "세션 저장 완료: " + dir.name else "저장할 세션이 없습니다.")
+                // 다음 통화는 같은 참가자의 다음 순번이므로 자동으로 올려 둔다 (연구자 실수 방지).
+                // 한 참가자는 시나리오 4종을 한 번씩 겪으므로 4에서 멈춘다.
+                if (dir != null) trialOrder.value = (trialOrder.value + 1).coerceAtMost(4)
+            }.onFailure {
+                notify("세션 저장 실패: " + (it.message ?: it.toString()))
+            }
         }
     }
 
@@ -174,9 +203,25 @@ class TestAppViewModel(app: Application) : AndroidViewModel(app) {
         scriptId.value = id
     }
 
+    /**
+     * 연구자 패널에서 목소리를 고른다 (통화 중에는 바꿀 수 없다).
+     *
+     * 통화 중에 바꾸면 한 세션 안에서 상대방이 다른 사람으로 바뀐다 — 개입 전은 40대
+     * 여성, 후속 대사는 20대 남성이 되는 식이다. 그 세션은 어떤 자극이었다고 쓸 수 없다.
+     */
+    fun selectVoice(voice: AttackerVoice) {
+        val inCall = _service.value?.callState?.value == ExperimentSessionService.CallState.IN_CALL
+        if (inCall) {
+            notify("통화 중에는 목소리를 바꿀 수 없습니다. 세션을 저장하고 종료한 뒤 고르세요.")
+            return
+        }
+        attackerVoice.value = voice
+    }
+
     val interventionOptions = InterventionCatalog.interventions
     val scriptOptions = AttackerScriptCatalog.scripts
     val playbackOptions = PlaybackMode.values().toList()
+    val voiceOptions = AttackerVoice.values().toList()
 
     /** 선택된 시나리오가 지인 조건인가 — 발신자 이름 입력란 노출 여부 */
     val selectedScriptIsAcquaintance: Boolean

@@ -152,9 +152,17 @@ private fun CallControlButton(
  * 화면에 적힌 문장과 TTS가 읽는 문장이 같다. 귀로 들은 것과 눈으로 본 것이 다르면
  * 참가자가 무엇을 근거로 판단했는지 알 수 없어진다.
  *
- * 선택 버튼은 안내가 끝나야 눌린다(`choiceEnabled`). 안내를 다 듣기 전에 고를 수 있으면
- * "안내를 듣고 판단한다"는 조건 자체가 성립하지 않는다. 버튼을 숨겼다 나타내지 않고
+ * 버튼은 안내가 끝나야 눌린다(`announcementDone`). 안내를 다 듣기 전에 화면을 벗어날 수
+ * 있으면 "안내를 듣고 판단한다"는 조건이 성립하지 않는다. 버튼을 숨겼다 나타내지 않고
  * 흐리게 두었다가 켜는 이유도 같다 — 요소가 새로 생기면 그것이 또 하나의 화면 전환이 된다.
+ *
+ * 조건별로 아래에 뜨는 버튼이 다르다:
+ *  - 조건 1 (`offerChoice`) : [통화 종료] / [통화 이어가기]
+ *  - 조건 2 (강제 종료)      : [통화 종료] 하나
+ *
+ * 두 조건 모두 [통화 종료]를 누르면 **통화 종료 화면**으로 넘어간다. 거기서 세션을
+ * 저장하면 처음 화면으로 돌아가 다음 시나리오를 시작할 수 있다. 조건 2에서 이 버튼이
+ * 없으면(또는 눌리지 않으면) 개입 화면이 유일한 화면으로 남아 실험을 이어갈 수 없다.
  */
 @Composable
 fun InterventionScreen(
@@ -186,49 +194,75 @@ fun InterventionScreen(
                 fontWeight = FontWeight.Medium
             )
 
+            Spacer(Modifier.height(36.dp))
+
             if (state.offerChoice) {
-                Spacer(Modifier.height(36.dp))
-                Button(
-                    onClick = onEnd,
-                    enabled = state.choiceEnabled,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AccentRed,
-                        disabledContainerColor = AccentRed.copy(alpha = 0.3f)
-                    ),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
-                    Text(
-                        "통화 종료",
-                        color = Color.White.copy(alpha = if (state.choiceEnabled) 1f else 0.5f),
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                InterventionButton(
+                    text = "통화 종료",
+                    enabled = state.announcementDone,
+                    primary = true,
+                    onClick = onEnd
+                )
                 Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = onContinue,
-                    enabled = state.choiceEnabled,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
-                    Text(
-                        "통화 이어가기",
-                        color = Color.White.copy(alpha = if (state.choiceEnabled) 1f else 0.5f),
-                        fontSize = 17.sp
-                    )
-                }
+                InterventionButton(
+                    text = "통화 이어가기",
+                    enabled = state.announcementDone,
+                    primary = false,
+                    onClick = onContinue
+                )
+            } else {
+                // 강제 종료 조건 — 통화는 이미 끊겼다. 이 버튼이 유일한 출구이므로
+                // 없으면 연구자가 숨은 패널을 찾아야만 다음 세션으로 넘어갈 수 있다.
+                InterventionButton(
+                    text = "통화 종료",
+                    enabled = state.announcementDone,
+                    primary = true,
+                    onClick = onEnd
+                )
             }
         }
     }
 }
 
+@Composable
+private fun InterventionButton(
+    text: String,
+    enabled: Boolean,
+    primary: Boolean,
+    onClick: () -> Unit
+) {
+    val alpha = if (enabled) 1f else 0.5f
+    if (primary) {
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AccentRed,
+                disabledContainerColor = AccentRed.copy(alpha = 0.3f)
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Text(text, color = Color.White.copy(alpha = alpha), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            enabled = enabled,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Text(text, color = Color.White.copy(alpha = alpha), fontSize = 17.sp)
+        }
+    }
+}
+
 /**
- * 통화 종료 화면.
+ * 통화 종료 화면 — 세션을 저장하고 처음 화면으로 돌아가는 유일한 출구.
  *
- * 개입 2에서는 이 화면이 [InterventionScreen]에 덮여 참가자에게 보이지 않는다 —
- * 통화가 끊겼다고 화면이 바뀌면 "한 화면으로 끝낸다"는 설계가 깨지기 때문이다.
- * 참가자가 직접 끊은 경우에만 이 화면이 보인다.
+ * 개입 화면에서 [통화 종료]를 누르면 두 조건 모두 이 화면으로 온다. 저장이 끝나면
+ * 세션 상태가 IDLE로 돌아가 설정 화면이 뜨고, 거기서 다음 시나리오를 시작한다.
+ * 개입이 발동하는 동안에는 개입 화면이 이 화면을 덮으므로 참가자에게 보이지 않는다.
  */
 @Composable
 fun CallEndedScreen(viewModel: TestAppViewModel, service: ExperimentSessionService) {
@@ -256,10 +290,15 @@ fun CallEndedScreen(viewModel: TestAppViewModel, service: ExperimentSessionServi
                 modifier = Modifier.fillMaxWidth().height(52.dp)
             ) {
                 Text(
-                    if (saving) "저장 중…" else "세션 저장하고 종료",
+                    if (saving) "저장 중…" else "세션 저장하고 처음 화면으로",
                     color = Color.White, fontSize = 16.sp
                 )
             }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "녹음(recording.wav)과 기록(session.json)을 확정한 뒤 설정 화면으로 돌아갑니다.",
+                color = CallSubText, fontSize = 12.sp, textAlign = TextAlign.Center
+            )
         }
     }
 }

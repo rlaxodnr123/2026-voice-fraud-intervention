@@ -34,6 +34,7 @@ import com.example.callguard.testapp.domain.log.SessionMeta
 import com.example.callguard.testapp.domain.script.AttackerScript
 import com.example.callguard.testapp.domain.script.AttackerScriptCatalog
 import com.example.callguard.testapp.domain.script.AttackerScriptPlayer
+import com.example.callguard.testapp.domain.script.AttackerVoice
 import com.example.callguard.testapp.domain.script.CallerRelationship
 import com.example.callguard.testapp.domain.script.PlaybackMode
 import com.example.callguard.testapp.domain.script.ScriptLine
@@ -107,8 +108,8 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         val message: String,
         /** 통화 이어가기/종료 버튼을 보여 주는가 (개입 1) */
         val offerChoice: Boolean,
-        /** 안내가 끝나 버튼을 실제로 누를 수 있는가 */
-        val choiceEnabled: Boolean
+        /** 안내 음성이 끝났는가. 이때부터 화면의 버튼이 눌린다. */
+        val announcementDone: Boolean
     )
 
     private val _interventionScreen = MutableStateFlow<InterventionScreen?>(null)
@@ -144,6 +145,9 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
     @Volatile var activeScript: AttackerScript? = null; private set
     @Volatile var activeIntervention: InterventionConfig? = null; private set
     @Volatile var activeMode: PlaybackMode = PlaybackMode.AUTO_TTS; private set
+
+    /** 이 세션의 상대방 목소리 — 연구자 패널이 현재 자극을 확인하는 데 쓴다 */
+    @Volatile var activeVoice: AttackerVoice = AttackerVoice.M30; private set
 
     val sttReady: StateFlow<Boolean> get() = stt.ready
     val sttStatus: StateFlow<String> get() = stt.status
@@ -231,10 +235,11 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
             playWarningTone = { AlertTone.play() },
             speak = { text, onDone -> speak(text, VoiceRole.GUARD, flush = true) { onDone?.invoke() } },
             showInterventionScreen = { message, offerChoice ->
-                _interventionScreen.value = InterventionScreen(message, offerChoice, choiceEnabled = false)
+                _interventionScreen.value =
+                    InterventionScreen(message, offerChoice, announcementDone = false)
             },
-            enableChoice = {
-                _interventionScreen.value = _interventionScreen.value?.copy(choiceEnabled = true)
+            setAnnouncementDone = {
+                _interventionScreen.value = _interventionScreen.value?.copy(announcementDone = true)
             },
             hideInterventionScreen = { _interventionScreen.value = null },
             endCall = { terminateByApp() },
@@ -371,6 +376,7 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         interventionId: InterventionId,
         scriptId: String,
         mode: PlaybackMode,
+        voice: AttackerVoice,
         recordAudio: Boolean,
         callerNameOverride: String = ""
     ) {
@@ -391,6 +397,15 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         activeScript = script
         activeIntervention = config
         activeMode = mode
+        activeVoice = voice
+
+        // 고른 목소리는 녹음본을 재생할 때만 소리에 반영된다. 나머지 모드는 시스템 TTS가
+        // 읽으므로 목소리 선택이 아무 효과가 없는데, 그 사실을 모른 채 목소리 조건으로
+        // 묶어 분석하면 존재하지 않는 조건을 비교하게 된다.
+        val voiceApplied = mode == PlaybackMode.RECORDING
+        if (!voiceApplied) {
+            emit("'" + mode.label + "' 모드에서는 고른 목소리(" + voice.label + ")가 적용되지 않습니다.")
+        }
 
         // 지인 조건에서만 이름을 띄운다. 참가자 나이·가족 구성에 맞춰 연구자가 바꿀 수 있다.
         val displayName = if (script.relationship == CallerRelationship.ACQUAINTANCE) {
@@ -414,6 +429,9 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
                 relationship = script.relationship.name,
                 callerDisplayed = displayName.ifBlank { script.callerNumber },
                 playbackMode = mode.name,
+                attackerVoice = voice.id,
+                attackerVoiceLabel = voice.label,
+                attackerVoiceApplied = voiceApplied,
                 startedAt = callStartedAt
             )
         )
@@ -455,7 +473,7 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
 
         // 벨소리 없이 바로 통화 중 상태로 시작한다. 이번 실험의 관심사는 수신 판단이
         // 아니라 "대사가 끝난 순간의 개입"이므로, 앞단을 길게 두면 세션마다 편차만 커진다.
-        scriptPlayer.start(script, mode)
+        scriptPlayer.start(script, mode, voice)
     }
 
     /** 라이브 모드 — 연구자가 방금 읽은 대사를 완료 처리 */
@@ -499,10 +517,24 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         intervention.resumeCall()
     }
 
-    /** 참가자가 개입 화면에서 [통화 종료]를 선택 */
+    /**
+     * 참가자가 개입 화면에서 [통화 종료]를 선택.
+     *
+     * 조건 1은 통화가 아직 살아 있으므로 여기서 끊는다. 조건 2는 앱이 이미 끊어 놓았으므로
+     * 참가자가 안내를 확인하고 화면을 벗어난 시각만 남긴다 — 강제 종료 조건에서 참가자가
+     * 그 화면을 얼마나 오래 보고 있었는지가 이 이벤트로만 남는다.
+     * 어느 쪽이든 개입 화면을 걷어내 통화 종료 화면으로 넘어간다.
+     */
     fun endCallFromInterventionScreen() {
         intervention.dismissScreen()
-        endCallByParticipant("intervention_screen_end")
+        if (_callState.value == CallState.IN_CALL) {
+            endCallByParticipant("intervention_screen_end")
+        } else {
+            logger.log(
+                "participant_confirmed_termination",
+                mapOf("sinceInterventionMs" to sinceIntervention())
+            )
+        }
     }
 
     fun toggleParticipantMute() {
@@ -555,7 +587,12 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
      * (혼잣말·재발신 시도 언급 등)이 관찰 대상이기 때문이다.
      */
     fun finishSession(reason: String): File? {
-        if (!logger.isActive) return null
+        if (!logger.isActive) {
+            // 저장할 로그가 없어도 화면 상태는 반드시 되돌린다. 그러지 않으면 종료 화면이나
+            // 개입 화면에 갇혀 다음 시나리오를 시작할 방법이 없어진다.
+            resetToIdle()
+            return null
+        }
         scriptPlayer.stop()
         durationJob?.cancel()
         mainHandler.removeCallbacksAndMessages(null)
@@ -571,6 +608,12 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
                 "recordingDurationMs" to recording?.second
             )
         )
+        resetToIdle()
+        return dir
+    }
+
+    /** 세션 종료 후 처음 화면(설정)으로 돌아가기 위한 상태 초기화 */
+    private fun resetToIdle() {
         intervention.reset()
         restoreAudioMode()
         demoteFromForeground()
@@ -578,12 +621,12 @@ class ExperimentSessionService : LifecycleService(), TextToSpeech.OnInitListener
         _callState.value = CallState.IDLE
         _micBlocked.value = false
         _remoteAudioBlocked.value = false
+        _participantMuted.value = false
         _interventionScreen.value = null
         _currentLineIndex.value = -1
         _currentLineText.value = ""
         activeScript = null
         activeIntervention = null
-        return dir
     }
 
     // ── 관찰·수동 기록 ────────────────────────────────────────────

@@ -42,6 +42,7 @@ fun ResearcherPanel(viewModel: TestAppViewModel, service: ExperimentSessionServi
     val script = service.activeScript
     val intervention = service.activeIntervention
     val mode = service.activeMode
+    val voice = service.activeVoice
 
     val selectedIntervention by viewModel.interventionId.collectAsState()
     val selectedScript by viewModel.scriptId.collectAsState()
@@ -50,6 +51,8 @@ fun ResearcherPanel(viewModel: TestAppViewModel, service: ExperimentSessionServi
     var injectText by remember { mutableStateOf("") }
     var leakDetail by remember { mutableStateOf("") }
 
+    // 패널이 열려 있는 동안 TestApp이 아래 화면을 그리지 않으므로, 빈 영역을 눌러도
+    // 통화 화면 버튼이 눌리지 않는다 (터치를 삼켜 막으면 이 패널의 [닫기]까지 죽는다).
     Box(modifier = Modifier.fillMaxSize().background(Color(0xE6000000))) {
         Column(
             modifier = Modifier
@@ -78,6 +81,14 @@ fun ResearcherPanel(viewModel: TestAppViewModel, service: ExperimentSessionServi
                 StatusLine("셀", script?.let { it.scamLevel.label + " × " + it.relationship.label } ?: "-")
                 StatusLine("요구", script?.requestedInfo ?: "-")
                 StatusLine("재생 모드", mode.label)
+                // 고른 목소리가 실제로 나가고 있는지까지 보여 준다 — 녹음본 모드가 아니면
+                // 선택과 무관하게 시스템 TTS가 읽는다.
+                StatusLine(
+                    "상대 목소리",
+                    if (mode == PlaybackMode.RECORDING) voice.label
+                    else voice.label + " (미적용 — 시스템 TTS)",
+                    if (mode == PlaybackMode.RECORDING) Color.White else WarnAmber
+                )
                 StatusLine("개입", if (fired) "발동됨" else "대기", if (fired) AccentRed else CallSubText)
                 StatusLine("스피커 차단", if (remoteBlocked) "상대 음성 차단 중" else "정상", if (remoteBlocked) AccentRed else CallSubText)
                 StatusLine("마이크 차단", if (micBlocked) "차단 중" else "정상", if (micBlocked) AccentRed else CallSubText)

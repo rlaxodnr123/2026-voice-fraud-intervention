@@ -27,7 +27,7 @@ class InterventionControllerTest {
 
         /** 개입 화면 표시 이력: (문구, 선택 제공 여부) */
         val screens = mutableListOf<Pair<String, Boolean>>()
-        var choiceEnabledCount = 0
+        var announcementDoneCount = 0
         var hideCount = 0
 
         var endCallCount = 0
@@ -48,7 +48,7 @@ class InterventionControllerTest {
                 if (autoCompleteTts) onDone?.invoke() else pendingTtsDone = onDone
             },
             showInterventionScreen = { msg, offer -> screens.add(msg to offer) },
-            enableChoice = { choiceEnabledCount++ },
+            setAnnouncementDone = { announcementDoneCount++ },
             hideInterventionScreen = { hideCount++ },
             endCall = { endCallCount++ },
             onLog = { event, _ -> events.add(event) },
@@ -106,7 +106,7 @@ class InterventionControllerTest {
 
         assertEquals(
             "보이스피싱으로 의심되어 통화가 잠시 중단되었습니다. " +
-                "상대방과 나의 음성이 서로 차단되어 전달되지 않습니다. 통화를 이어가시겠습니까?",
+                "상대방과 나의 음성이 서로 차단되어 전달되지 않습니다. 통화를 이어가려면 화면의 버튼을 눌러주세요.",
             a.spoken.first()
         )
         assertEquals("보이스피싱으로 의심되어 통화가 종료되었습니다.", b.spoken.first())
@@ -135,9 +135,9 @@ class InterventionControllerTest {
         val (r, c) = armed(InterventionId.POPUP_TTS) { autoCompleteTts = false }
         c.fireAuto("point")
 
-        assertEquals(0, r.choiceEnabledCount)
+        assertEquals(0, r.announcementDoneCount)
         r.pendingTtsDone?.invoke()
-        assertEquals(1, r.choiceEnabledCount)
+        assertEquals(1, r.announcementDoneCount)
         assertTrue(r.events.contains("intervention_choice_enabled"))
     }
 
@@ -156,9 +156,22 @@ class InterventionControllerTest {
         r.pendingTtsDone?.invoke()
 
         assertEquals(1, r.endCallCount)
-        assertEquals(0, r.choiceEnabledCount)
         // 통화가 끊겨도 개입 화면은 남는다 — 화면이 바뀌면 한 화면 설계가 깨진다
         assertEquals(0, r.hideCount)
+    }
+
+    @Test
+    fun `강제 종료도 안내가 끝나면 화면 버튼이 눌리게 된다`() {
+        // 이 버튼이 강제 종료 뒤 연구자 화면으로 돌아가는 유일한 출구다.
+        // 안내 전에 눌리면 참가자가 사유를 듣기 전에 화면을 벗어날 수 있다.
+        val (r, c) = armed(InterventionId.FORCE_TERMINATE) { autoCompleteTts = false }
+        c.fireAuto("point")
+
+        assertEquals("안내 중에는 아직 못 누른다", 0, r.announcementDoneCount)
+        r.pendingTtsDone?.invoke()
+        assertEquals(1, r.announcementDoneCount)
+        // 선택 조건이 아니므로 choice_enabled 로그는 남기지 않는다
+        assertFalse(r.events.contains("intervention_choice_enabled"))
     }
 
     // ── 두 조건의 공통성 ─────────────────────────────────────
@@ -232,6 +245,7 @@ class InterventionControllerTest {
         assertEquals(0, r.toneCount)
         assertTrue(r.spoken.isEmpty())
         assertTrue("통제는 개입 화면도 띄우지 않는다", r.screens.isEmpty())
+        assertEquals(0, r.announcementDoneCount)
         assertEquals(0, r.endCallCount)
         // 발동 시각은 기록돼야 개입군과 같은 기준점에서 이후 행동을 비교할 수 있다
         assertEquals(1_000L, c.firedAt)

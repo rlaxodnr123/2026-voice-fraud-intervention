@@ -3,7 +3,6 @@ package com.example.callguard.testapp.domain.script
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -20,7 +19,8 @@ enum class PlaybackMode(val label: String, val description: String) {
     ),
     RECORDING(
         "녹음본 재생",
-        "assets/attacker/<대본ID>/ 에 넣어 둔 실제 연기 녹음을 순서대로 재생한다. 파일이 없는 줄은 TTS로 대체된다"
+        "assets/attacker/<대본ID>/<목소리ID>/ 에 넣어 둔 녹음을 순서대로 재생한다. " +
+            "연구자가 고른 목소리(연령대·성별)가 그대로 나간다. 파일이 없는 줄은 TTS로 대체된다"
     ),
     LIVE(
         "라이브 발화 (연구자)",
@@ -53,23 +53,28 @@ class AttackerScriptPlayer(
     private val onScriptFinished: () -> Unit,
     private val onLog: (event: String, data: Map<String, Any?>) -> Unit
 ) {
-    private val TAG = "ScriptPlayer"
-
     private var job: Job? = null
     private var mediaPlayer: MediaPlayer? = null
 
     @Volatile var script: AttackerScript? = null; private set
     @Volatile var mode: PlaybackMode = PlaybackMode.AUTO_TTS; private set
 
+    /**
+     * 이 세션에서 쓰는 상대방 목소리. [start]에서 정해지고 세션이 끝날 때까지 바뀌지 않는다 —
+     * 통화 중에 바뀌면 상대방이 다른 사람으로 변해 그 세션이 어떤 자극이었는지 말할 수 없다.
+     */
+    @Volatile var voice: AttackerVoice = AttackerVoice.M30; private set
+
     /** 라이브 모드에서 연구자가 지금 읽어야 할 줄 (0-based). 자동 모드에서는 재생 중인 줄. */
     @Volatile var cursor: Int = -1; private set
 
     @Volatile private var interventionPointFired = false
 
-    fun start(script: AttackerScript, mode: PlaybackMode) {
+    fun start(script: AttackerScript, mode: PlaybackMode, voice: AttackerVoice) {
         stop()
         this.script = script
         this.mode = mode
+        this.voice = voice
         this.cursor = -1
         this.interventionPointFired = false
 
@@ -79,6 +84,8 @@ class AttackerScriptPlayer(
                 "scriptId" to script.id,
                 "label" to script.label,
                 "mode" to mode.name,
+                "voice" to voice.id,
+                "voiceLabel" to voice.label,
                 "lineCount" to script.mainLines.size,
                 "interventionPointIndex" to script.interventionPointIndex,
                 "scamLevel" to script.scamLevel.name,
@@ -163,16 +170,45 @@ class AttackerScriptPlayer(
         }
     }
 
-    /** 개입 후 참가자가 계속 대답하려 할 때, 연구자가 후속 대사를 한 줄 재생한다. */
+    /**
+     * 개입 후 참가자가 계속 대답하려 할 때, 연구자가 후속 대사를 한 줄 재생한다.
+     *
+     * 후속 대사도 **개입 전과 같은 목소리**로 나가야 한다. 개입 1에서 참가자가
+     * [통화 이어가기]를 누른 직후 듣는 것이 바로 이 대사인데, 여기서 목소리가 시스템
+     * TTS로 바뀌면 참가자가 상황이 연출임을 알아차려 그 뒤의 행동이 측정값이 되지 못한다.
+     */
     fun playFollowUp(followUpIndex: Int) {
         val s = script ?: return
         val line = s.followUpLines.getOrNull(followUpIndex) ?: return
-        onLog("attacker_followup", mapOf("index" to followUpIndex, "text" to line.text, "mode" to mode.name))
-        if (mode == PlaybackMode.LIVE) return  // 라이브는 연구자가 직접 읽는다
+        if (mode == PlaybackMode.LIVE) {
+            // 라이브는 연구자가 직접 읽는다 — 앱은 소리를 내지 않는다
+            onLog("attacker_followup", mapOf("index" to followUpIndex, "text" to line.text, "mode" to mode.name))
+            return
+        }
+
+        val asset = if (mode == PlaybackMode.RECORDING) {
+            AttackerVoiceAssets.find(
+                context, s.id, voice, AttackerVoiceAssets.followUpStem(followUpIndex + 1)
+            )
+        } else {
+            null
+        }
+
+        onLog(
+            "attacker_followup",
+            mapOf(
+                "index" to followUpIndex,
+                "text" to line.text,
+                "mode" to mode.name,
+                "voice" to voice.id,
+                "source" to if (asset != null) "recording" else "tts"
+            )
+        )
+
         scope.launch {
             onSpeakingChanged(true)
             try {
-                speakAwait(line.text)
+                if (asset != null) playAsset(asset) else speakAwait(line.text)
             } finally {
                 onSpeakingChanged(false)
             }
@@ -198,18 +234,23 @@ class AttackerScriptPlayer(
         onSpeakingChanged(true)
         try {
             if (mode == PlaybackMode.RECORDING) {
-                val asset = findAudioAsset(script.id, script.audioFileIndex(index))
+                val stem = AttackerVoiceAssets.mainStem(script.audioFileIndex(index))
+                val asset = AttackerVoiceAssets.find(context, script.id, voice, stem)
                 if (asset != null) {
                     playAsset(asset)
                     return
                 }
                 // 녹음 파일이 없으면 무음으로 건너뛰지 않고 TTS로 대체한다.
                 // 무음으로 건너뛰면 참가자가 요구를 듣지 못한 채 개입만 발동해 세션이 무효가 된다.
+                //
+                // 다만 **고른 목소리가 아닌 소리가 나간다.** 어느 목소리의 어느 파일이
+                // 없어서 그렇게 됐는지 남겨야 분석에서 그 세션을 걸러낼 수 있다.
                 onLog(
                     "attacker_line_fallback_tts",
                     mapOf(
                         "index" to index,
-                        "expected" to "attacker/" + script.id + "/" + script.audioFileIndex(index) + ".*"
+                        "voice" to voice.id,
+                        "expected" to voice.assetDir(script.id) + "/" + stem + ".*"
                     )
                 )
             }
@@ -217,23 +258,6 @@ class AttackerScriptPlayer(
         } finally {
             onSpeakingChanged(false)
         }
-    }
-
-    private val audioExtensions = listOf("m4a", "mp3", "wav", "ogg")
-
-    private fun findAudioAsset(scriptId: String, fileIndex: Int): String? {
-        val dir = "attacker/" + scriptId
-        val names = try {
-            context.assets.list(dir)?.toSet() ?: emptySet()
-        } catch (e: Exception) {
-            Log.w(TAG, "녹음본 폴더 조회 실패: " + dir, e)
-            emptySet<String>()
-        }
-        for (ext in audioExtensions) {
-            val name = "" + fileIndex + "." + ext
-            if (name in names) return dir + "/" + name
-        }
-        return null
     }
 
     private suspend fun playAsset(assetPath: String) = suspendCancellableCoroutine<Unit> { cont ->

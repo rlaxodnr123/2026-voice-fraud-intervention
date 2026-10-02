@@ -33,8 +33,11 @@ class InterventionController(
     private val speak: (text: String, onDone: (() -> Unit)?) -> Unit,
     /** 개입 화면을 띄운다. 선택 버튼은 안내가 끝나야 활성화된다. */
     private val showInterventionScreen: (message: String, offerChoice: Boolean) -> Unit,
-    /** 안내가 끝나 선택 버튼을 쓸 수 있게 한다 */
-    private val enableChoice: () -> Unit,
+    /**
+     * 안내가 끝났음을 화면에 알린다. 조건 1은 선택 버튼이, 조건 2는 [통화 종료] 버튼이
+     * 이때부터 눌린다 — 안내를 다 듣기 전에 화면을 벗어날 수 있으면 조건이 성립하지 않는다.
+     */
+    private val setAnnouncementDone: () -> Unit,
     /** 개입 화면을 걷어낸다 */
     private val hideInterventionScreen: () -> Unit,
     private val endCall: () -> Unit,
@@ -141,11 +144,10 @@ class InterventionController(
     }
 
     private fun afterAnnouncement(cfg: InterventionConfig) {
-        if (cfg.offerChoice) {
-            // 화면은 그대로 두고 버튼만 쓸 수 있게 한다 — 여기가 "고민 시작" 시각이다.
-            enableChoice()
-            onLog("intervention_choice_enabled", emptyMap())
-        }
+        // 화면은 그대로 두고 버튼만 쓸 수 있게 한다.
+        // 조건 1에서는 여기가 "고민 시작" 시각이다.
+        setAnnouncementDone()
+        if (cfg.offerChoice) onLog("intervention_choice_enabled", emptyMap())
         // 조건 2는 통화만 끊고 화면은 유지한다. 끊겼다고 다른 화면으로 넘어가면
         // "한 화면으로 끝낸다"는 설계가 깨진다.
         if (cfg.terminateCall) endCall()

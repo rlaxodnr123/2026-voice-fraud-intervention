@@ -31,6 +31,11 @@ import com.example.callguard.testapp.presentation.viewmodel.TestAppViewModel
  * 끊겨 아래 화면이 IN_CALL → ENDED로 바뀌는데, 개입 화면이 그 위를 덮고 있으므로
  * 참가자 눈에는 아무 변화가 없다 — 개입은 처음부터 끝까지 한 화면이다.
  *
+ * 오버레이(개입 화면·연구자 패널)가 덮고 있는 동안에는 **아래 화면을 그리지 않는다.**
+ * 반투명으로 가리기만 하면 아래 통화 화면의 [종료]·[음소거]가 그대로 눌려, 참가자가
+ * 개입 화면의 버튼 게이트를 우회할 수 있고 로그로도 구분이 안 된다. 오버레이에서
+ * 포인터 이벤트를 삼켜 막는 방법은 쓰지 않는다 — 오버레이 자신의 버튼까지 죽는다.
+ *
  * 연구자 패널 버튼은 그보다도 위에 둔다. 개입 2에서 개입 화면이 계속 남아 있으므로,
  * 버튼이 그 아래 깔리면 연구자가 세션을 닫을 길이 없어진다.
  *
@@ -58,14 +63,20 @@ fun TestApp(viewModel: TestAppViewModel) {
             val callState by svc.callState.collectAsState()
             val intervention by svc.interventionScreen.collectAsState()
 
+            // 오버레이가 전면을 덮는 동안 아래 화면은 아예 구성하지 않는다
+            val overlayCovers = !logVisible && (intervention != null || panelVisible)
+
             when {
                 logVisible -> LogScreen(viewModel)
+                overlayCovers -> {}
                 callState == ExperimentSessionService.CallState.IDLE -> SetupScreen(viewModel, svc)
                 callState == ExperimentSessionService.CallState.IN_CALL -> CallScreen(viewModel, svc)
                 else -> CallEndedScreen(viewModel, svc)
             }
 
-            // 통화/종료 화면 위 — 상태가 바뀌어도 참가자에게는 같은 화면으로 보인다
+            // 통화/종료 화면 위 — 상태가 바뀌어도 참가자에게는 같은 화면으로 보인다.
+            // [통화 종료]는 두 조건 모두 통화 종료 화면으로 넘어가고, 거기서 세션을
+            // 저장하면 처음 화면으로 돌아간다.
             if (!logVisible) {
                 intervention?.let { state ->
                     InterventionScreen(

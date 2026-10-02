@@ -26,6 +26,16 @@ data class SessionMeta(
     /** 통화 화면에 실제로 표시한 발신자 (지인 조건에서 연구자가 바꿀 수 있다) */
     val callerDisplayed: String,
     val playbackMode: String,
+    /** 상대방 목소리 (m20·f20·m30·f30·m40·f40) — 같은 대사라도 목소리가 자극을 바꾼다 */
+    val attackerVoice: String,
+    val attackerVoiceLabel: String,
+    /**
+     * 고른 목소리가 실제로 그대로 나갔는가.
+     *
+     * "녹음본 재생"이 아닌 모드에서는 시스템 TTS가 읽으므로 목소리 선택이 소리에
+     * 반영되지 않는다. 이 값이 false인 세션을 목소리 조건으로 묶어 분석하면 안 된다.
+     */
+    val attackerVoiceApplied: Boolean,
     val startedAt: Long
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
@@ -39,6 +49,9 @@ data class SessionMeta(
         "relationship" to relationship,
         "callerDisplayed" to callerDisplayed,
         "playbackMode" to playbackMode,
+        "attackerVoice" to attackerVoice,
+        "attackerVoiceLabel" to attackerVoiceLabel,
+        "attackerVoiceApplied" to attackerVoiceApplied,
         "startedAt" to startedAt,
         "startedAtText" to ExperimentLogger.formatTime(startedAt)
     )
@@ -82,6 +95,9 @@ class ExperimentLogger(private val rootDir: File) {
     }
 
     private val events = mutableListOf<JSONObject>()
+
+    /** 쓰기 작업이 이미 큐에 있는지 — 이벤트마다 쌓지 않고 하나로 합친다 */
+    private val writePending = java.util.concurrent.atomic.AtomicBoolean(false)
     private val writer = Executors.newSingleThreadExecutor { r ->
         Thread(r, "ExperimentLogger").apply { isDaemon = true }
     }
@@ -98,6 +114,8 @@ class ExperimentLogger(private val rootDir: File) {
             append(meta.participantId.ifBlank { "unknown" })
             append("_T").append(meta.trialOrder)
             append("_").append(meta.scriptId)
+            // 목소리를 폴더명에 넣는다 — 세션 폴더를 열어 보지 않고도 어떤 자극이었는지 보인다
+            append("_").append(meta.attackerVoice)
             append("_").append(meta.interventionId)
             append("_").append(formatStamp(meta.startedAt))
         }.replace(Regex("[^A-Za-z0-9_\\-]"), "")
@@ -123,13 +141,34 @@ class ExperimentLogger(private val rootDir: File) {
 
     /** 세션 종료 — 파일을 확정하고 폴더를 돌려준다. @return 세션 폴더 */
     fun finish(reason: String, extra: Map<String, Any?> = emptyMap()): File? {
-        if (meta == null) return null
-        log("session_finished", extra + mapOf("reason" to reason))
+        val m = meta ?: return null
         val dir = sessionDir
-        // 연구자가 곧바로 내보내기를 누를 수 있으므로, 돌려주기 전에 파일을 완성시킨다.
-        runCatching { writer.submit { }.get(5, TimeUnit.SECONDS) }
+        log("session_finished", extra + mapOf("reason" to reason))
+        val snapshot = synchronized(events) { events.toList() }
+
+        // 먼저 세션을 닫아 둔다 — 큐에 남아 있던 쓰기 작업들이 여기서 전부 스스로 빠진다.
+        // 그러지 않으면 아래 동기 쓰기가 끝난 뒤 뒤늦게 실행된 작업이 옛 스냅샷으로 덮어써,
+        // session_finished 가 사라진 파일이 최종 산출물로 남는다.
         meta = null
         sessionDir = null
+
+        // 마지막 쓰기도 **같은 단일 스레드 큐**에 실어 보내고 끝날 때까지 기다린다.
+        // 이 스레드에서 직접 쓰면, 마침 실행 중이던 예약 작업이 그 뒤에 자기 스냅샷으로
+        // 파일을 덮어써 session_finished 는 물론 대부분의 이벤트가 사라진 파일이 남는다 —
+        // 위에서 세션을 닫아 빠지는 것은 "아직 시작하지 않은" 작업뿐이다.
+        // 기다리는 이유: 연구자가 돌려받은 폴더를 곧바로 내보낼 수 있어야 한다.
+        if (dir != null) {
+            runCatching { writer.submit { writeSessionFile(dir, m, snapshot) } }
+                .onSuccess { task ->
+                    runCatching { task.get(5, TimeUnit.SECONDS) }
+                        .onFailure { Log.e(TAG, "세션 로그 확정 대기 실패", it) }
+                }
+                .onFailure {
+                    // 큐가 이미 닫혔다면 기록을 잃는 것보다 이 스레드에서 쓰는 편이 낫다
+                    Log.e(TAG, "세션 로그 확정 예약 실패 — 이 스레드에서 직접 쓴다", it)
+                    writeSessionFile(dir, m, snapshot)
+                }
+        }
         return dir
     }
 
@@ -137,25 +176,42 @@ class ExperimentLogger(private val rootDir: File) {
         runCatching { writer.shutdown() }
     }
 
+    /**
+     * 파일 쓰기를 예약한다.
+     *
+     * 이벤트마다 작업을 큐에 넣으면 각 작업이 **자기 시점의 스냅샷으로 파일 전체를 덮어써서**
+     * 마지막에 실행된 작업이 이기는 경쟁이 된다. 그래서 예약은 한 번만 하고(coalescing),
+     * 실제로 실행될 때 그 순간의 최신 스냅샷을 쓴다.
+     */
     private fun scheduleFlush() {
-        val dir = sessionDir ?: return
-        val m = meta ?: return
-        val snapshot = synchronized(events) { events.toList() }
+        if (!writePending.compareAndSet(false, true)) return
         runCatching {
             writer.execute {
-                try {
-                    val root = JSONObject()
-                    root.put("meta", JSONObject(m.toMap().mapValues { it.value ?: JSONObject.NULL }))
-                    root.put(
-                        "summary",
-                        JSONObject(summarize(m, snapshot).mapValues { it.value ?: JSONObject.NULL })
-                    )
-                    root.put("events", JSONArray(snapshot))
-                    File(dir, "session.json").writeText(root.toString(2))
-                } catch (e: Exception) {
-                    Log.e(TAG, "세션 로그 기록 실패", e)
-                }
+                writePending.set(false)
+                val dir = sessionDir ?: return@execute   // 이미 종료된 세션이면 건드리지 않는다
+                val m = meta ?: return@execute
+                val snapshot = synchronized(events) { events.toList() }
+                writeSessionFile(dir, m, snapshot)
             }
+        }.onFailure {
+            writePending.set(false)
+            // 큐가 거부하면 그 이벤트부터 파일에 안 남는다 — 조용히 넘기면 원인을 못 찾는다
+            Log.e(TAG, "세션 로그 플러시 예약 실패", it)
+        }
+    }
+
+    private fun writeSessionFile(dir: File, m: SessionMeta, snapshot: List<JSONObject>) {
+        try {
+            val root = JSONObject()
+            root.put("meta", JSONObject(m.toMap().mapValues { it.value ?: JSONObject.NULL }))
+            root.put(
+                "summary",
+                JSONObject(summarize(m, snapshot).mapValues { it.value ?: JSONObject.NULL })
+            )
+            root.put("events", JSONArray(snapshot))
+            File(dir, "session.json").writeText(root.toString(2))
+        } catch (e: Exception) {
+            Log.e(TAG, "세션 로그 기록 실패", e)
         }
     }
 
